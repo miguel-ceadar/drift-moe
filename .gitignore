@@ -1,0 +1,8 @@
+**/*.pt
+*.pt
+**/*.gz
+*.gz
+**/*.pkl
+*.pkl
+data/*
+**/data
