@@ -19,8 +19,36 @@ import pandas as pd
 import models as models
 # Set the seed for PyTorch
 torch.manual_seed(42)
+def auto_remap_target(target, class_list):
+    """
+    Automatically remap target values to the range [0, num_classes-1].
 
-def train(args, model, device, train_loader, optimizer, epoch, task=1):
+    Args:
+    - target (torch.Tensor): Target tensor with original class indices.
+    - class_list (list): List of class indices in your classification task.
+
+    Returns:
+    - torch.Tensor: Remapped target tensor.
+    """
+    remap_dict = {class_val: idx for idx, class_val in enumerate(class_list)}
+    remapped_target = torch.tensor([remap_dict[val.item()] for val in target])
+    return remapped_target
+
+def inverse_remap_target(remapped_target, class_list):
+    """
+    Map remapped target values back to their original values.
+
+    Args:
+    - remapped_target (torch.Tensor): Remapped target tensor.
+    - class_list (list): List of class indices in your classification task.
+
+    Returns:
+    - torch.Tensor: Original target tensor.
+    """
+    original_target = torch.tensor([class_list[idx] for idx in remapped_target])
+    return original_target
+
+def train(args, model, device, train_loader, optimizer, epoch, label_types=[0, 1, 2, 3, 4, 9]):
     """
     Train the neural network model using negative log-likelihood loss for multi classification.
 
@@ -44,17 +72,18 @@ def train(args, model, device, train_loader, optimizer, epoch, task=1):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
-        #print("SEBA",  output.shape, target.shape)
-        import pdb;pdb.set_trace()
-        if task==1:
-            loss = F.nll_loss(output, target)
-        else: 
-             remapped_result = remap_to_zero_based(task2_classes)
-
+        remapped_target = auto_remap_target(target, label_types)
+        
+        loss = F.nll_loss(output, remapped_target)
+        
         total_loss += loss.item()
 
         # Calculate accuracy
         pred = output.argmax(dim=1, keepdim=True)
+        pred = inverse_remap_target(pred, label_types)
+        #print("train:",torch.unique(pred), torch.unique(target))
+        #import pdb;pdb.set_trace()
+
         correct += pred.eq(target.view_as(pred)).sum().item()
 
         loss.backward()
@@ -72,7 +101,7 @@ def train(args, model, device, train_loader, optimizer, epoch, task=1):
     accuracy = 100.*correct / len(train_loader.dataset)
     return accuracy, average_loss
 
-def validate(model, device, dataloader):
+def validate(model, device, dataloader, label_types=[0, 1, 2, 3, 4, 9]):
     """
     Evaluate the neural network model on a validation or test set using binary cross-entropy loss for binary classification.
 
@@ -99,8 +128,15 @@ def validate(model, device, dataloader):
                 
                 data, target = data.to(device), target.to(device)
                 output = model(data)
-                val_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+        
+                remapped_target = auto_remap_target(target, label_types)
+                
+                val_loss = F.nll_loss(output, remapped_target, reduction='sum').item()
+                #val_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
                 pred = output.argmax(dim=1)  # get the index of the max log-probability
+                        
+                pred = inverse_remap_target(pred, label_types)
+                #print("test:",torch.unique(pred), torch.unique(target))
                 correct += pred.eq(target.view_as(pred)).sum().item()
                 all_predictions.append(pred.cpu().numpy())
                 all_labels.append(target.cpu().numpy())
@@ -117,7 +153,7 @@ def validate(model, device, dataloader):
     
     return accuracy, val_loss, all_predictions, all_labels
     
-def train_and_validate(args, model, device, train_loader, val_loader, optimizer, scheduler, title = ""):
+def train_and_validate(args, model, device, train_loader, val_loader, optimizer, scheduler, title = "", task1_classes=[0, 1, 2, 3, 4, 9]):
     """
     Train and validate a neural network model across multiple epochs.
 
@@ -142,8 +178,8 @@ def train_and_validate(args, model, device, train_loader, val_loader, optimizer,
     
 
     for epoch in range(1, args.epochs + 1):
-        train_accuracy, train_loss = train(args, model, device, train_loader, optimizer, epoch)
-        val_accuracy, val_loss, all_predictions, all_labels = validate(model, device, val_loader)
+        train_accuracy, train_loss = train(args, model, device, train_loader, optimizer, epoch,task1_classes)
+        val_accuracy, val_loss, all_predictions, all_labels = validate(model, device, val_loader,task1_classes)
         scheduler.step()
         train_accuracies.append(train_accuracy)
         train_losses.append(train_loss)
@@ -209,18 +245,6 @@ def get_data_loaders(dataset, train_size, val_size, train_kwargs, val_kwargs):
     train_loader = DataLoader(train_set, **train_kwargs)
     val_loader = DataLoader(val_set, **val_kwargs)
     return train_loader, val_loader
-
-def remap_to_zero_based(input_list):
-    # Create a mapping dictionary
-    mapping_dict = {val: index for index, val in enumerate(set(input_list))}
-    
-    # Remap the values using the mapping dictionary
-    remapped_list = [mapping_dict[val] for val in input_list]
-    
-    return remapped_list
-
-
-
 def main():
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -263,8 +287,8 @@ def main():
             val_kwargs.update(cuda_kwargs)
 
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-    mnist_dataset = datasets.MNIST(root="./data", train=True, transform=transform, download=True)
-
+    mnist_dataset = datasets.FashionMNIST(root="./data", train=True, transform=transform, download=True)
+    #import pdb;pdb.set_trace()
     if args.val_reduced:
             sampled_indices = torch.randperm(len(mnist_dataset))[:1000]
             mnist_dataset = Subset(mnist_dataset, sampled_indices)
@@ -282,27 +306,27 @@ def main():
     val_size_task1 = len(task1_indices) - train_size_task1
     train_loader_task1, val_loader_task1 = get_data_loaders(task1_dataset, train_size_task1, val_size_task1,
                                                                 train_kwargs, val_kwargs)
-    model = models.Net(classes = len(task1_classes)).to(device)
+    model = models.Net_log_softmax(classes = len(task1_classes)).to(device)
     #model = models.Net_tunable(classes = len(task1_classes)).to(device)
     #model = models.AlexNet(classes = len(task1_classes)).to(device)
     # model = models.BaseModel(28 * 28, 100, 6).to(device)
 
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
-    all_predictions, all_labels = train_and_validate(args, model, device, train_loader_task1, val_loader_task1, optimizer, scheduler,title="Task 1: ")
+    all_predictions, all_labels = train_and_validate(args, model, device, train_loader_task1, val_loader_task1, optimizer, scheduler,title="Task 1: ", task1_classes=task1_classes)
     model_state_dict_task1 = model.state_dict()
     save_model_state_dict(model_state_dict_task1, "mnist_cnn_task1.pt")
     print(f"results task 1 ".center(60,"-"))
     val_accuracy, val_loss, all_predictions, all_labels  = validate(model, device, val_loader_task1)
     # Define task 2 labeling
-    task2_classes = [5, 6, 7, 8, 9]
+    task2_classes = [5, 6, 7, 8, 9, 1]
     task2_indices = [i for i, (_, label) in enumerate(mnist_dataset) if label in task2_classes]
     task2_dataset = Subset(mnist_dataset, task2_indices)
     print("Selected labels for Task 2:", set(label for _, label in task2_dataset))
     train_size_task2 = int(0.8 * len(task2_indices))
     val_size_task2 = len(task2_indices) - train_size_task2
 
-    model_task2 = models.Net_log_softmax(classes = 10).to(device)
+    model_task2 = models.Net_log_softmax(classes = len(task2_classes)).to(device)
     # model_task2 = models.BaseModel(28 * 28, 100, 6).to(device)
     # model_task2 = models.AlexNet(classes = 6).to(device)
     model_task2.load_state_dict(model_state_dict_task1.copy()) 
@@ -312,11 +336,11 @@ def main():
     scheduler_task2 = StepLR(optimizer_task2, step_size=1, gamma=args.gamma)
 
     print(f"MODEL TRAINING TASK #2".center(60, "-"))
-
+    #import pdb;pdb.set_trace()
     train_loader_task2, val_loader_task2 = get_data_loaders(task2_dataset, train_size_task2, val_size_task2,
                                                                 train_kwargs, val_kwargs)
 
-    train_and_validate(args, model_task2, device, train_loader_task2, val_loader_task2, optimizer_task2, scheduler_task2, title="Task 2: ")
+    train_and_validate(args, model_task2, device, train_loader_task2, val_loader_task2, optimizer_task2, scheduler_task2, title="Task 2: ", task1_classes = task2_classes)
 
     model_state_dict_task2 = model_task2.state_dict()
     save_model_state_dict(model_state_dict_task2, "mnist_cnn_task2.pt")

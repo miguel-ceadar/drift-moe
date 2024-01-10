@@ -74,7 +74,32 @@ class Net_tunable(nn.Module):
         x = self.dropout2(x)
         x = self.fc2(x)
         return x
+class Net_binary(nn.Module):
+    def __init__(self, classes=2):
+        super(Net_binary, self).__init__()
+        self.classes = classes
+        self.conv1 = nn.Conv2d(1, 32, 3, 1)
+        self.conv2 = nn.Conv2d(32, 64, 3, 1)
+        self.dropout1 = nn.Dropout(0.25)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc1 = nn.Linear(9216, 128)
+        self.fc2 = nn.Linear(128, self.classes)
 
+    def forward(self, x):
+        x = self.conv1(x)
+        x = F.relu(x)
+        x = self.conv2(x)
+        x = F.relu(x)
+        x = F.max_pool2d(x, 2)
+        x = self.dropout1(x)
+        x = torch.flatten(x, 1)
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.dropout2(x)
+        x = self.fc2(x)
+        output = F.log_softmax(x, dim=1)
+        return output
+    
 class AlexNet(nn.Module):   
     def __init__(self, classes=2):
         super(AlexNet, self).__init__()
@@ -111,7 +136,7 @@ class AlexNet(nn.Module):
         output = F.log_softmax(x, dim=1)
         return output
         
-class Net_original(nn.Module):
+class Net(nn.Module):
     def __init__(self, classes=2):
         super(Net, self).__init__()
         self.classes = classes
