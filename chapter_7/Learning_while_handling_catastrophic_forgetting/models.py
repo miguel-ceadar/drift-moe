@@ -73,7 +73,9 @@ class Net_tunable(nn.Module):
         x = F.relu(x)
         x = self.dropout2(x)
         x = self.fc2(x)
-        return x
+        output = F.log_softmax(x, dim=1)
+        return output
+    
 class Net_binary(nn.Module):
     def __init__(self, classes=2):
         super(Net_binary, self).__init__()
