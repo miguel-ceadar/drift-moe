@@ -2,13 +2,9 @@
 *.DS_Store
 **/*.ipynb_checkpoints/
 *.ipynb_checkpoints/
-**/*.pt
-*.pt
 **/*.png
 *.png
 **/*.gz
 *.gz
-**/*.pkl
-*.pkl
 data/*
 **/data
