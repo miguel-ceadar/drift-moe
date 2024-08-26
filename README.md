@@ -1,93 +1,80 @@
-# UCD_MISC_Data-Drift-in-Machine-Learning
+# Welcome to Data-Drift-in-Machine-Learning
 
+Code samples for [Machine Learning for Drifts and Shifts](todo) published by [Packt](https://www.packtpub.com/?utm_source=github).
 
+Thank you for choosing our book, and for getting familiar with drifts in machine learning! 
 
-## Getting started
+This repository contains working versions of the snippets provided in the book to help you understand and address data drift challenges effectively.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Chapters' examples
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+* [Chapter 4: Monitoring and Detecting Drifts](Chapter04)
+* [Chapter 5: Concept Drift Detection and Handling](Chapter05)
+* [Chapter 6: Continuous and Incremental Learning](Chapter06)
+* [Chapter 7: Catastrophic Forgetting and Adaptive Learning](Chapter07)
+* [Chapter 8: Model Re-training](Chapter08)
+* [Chapter 9: Managing End-to-end Pipelines under the Presence of Drifts](Chapter09)
+* [Chapter 10: Working with Datasets Partially Representing the Data Distribution](Chapter10)
+* [Chapter 11: Learning Non-stationary Data](Chapter11)
+* [Chapter 12: Dealing with Stationarities and Recurrences in Continual Learning](Chapter12)
 
-## Add your files
+## Setting Up Your Environment
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+Let's get started by setting up your environment. Follow Chapter #2 for specific details on installing all required packages. List of current requirements is present in [requirements.txt](requirements.txt) file.
 
-```
-cd existing_repo
-git remote add origin https://gitlab.com/CeADARIreland/UCD/IDG/ucd_misc_data-drift-in-machine-learning.git
-git branch -M main
-git push -uf origin main
-```
+1. **Create a Conda Environment:**
+   ```bash
+   conda create -n book python=3.10 -y
+   conda activate book
+   ```
 
-## Integrate with your tools
+1. **Clone the Repository and Install Requirements:**
+   ```bash
+   git clone https://github.com/PacktPublishing/Data-Drift-in-Machine-Learning.git
+   cd tutorials
+   pip install -r requirements.txt
+   ```
 
-- [ ] [Set up project integrations](https://gitlab.com/CeADARIreland/UCD/IDG/ucd_misc_data-drift-in-machine-learning/-/settings/integrations)
+1. **Installing [NannyML](https://www.nannyml.com/library):**
 
-## Collaborate with your team
+   To install NannyML on a Mac, follow these steps:
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+   1. **Install Homebrew** (if not already installed) from [Homebrew](https://brew.sh/).
 
-## Test and Deploy
+   2. **Install libomp**:
+      ```bash
+      brew install libomp
+      ```
 
-Use the built-in continuous integration in GitLab.
+   3. **Install LightGBM** via conda:
+      ```bash
+      conda install -c conda-forge lightgbm
+      ```
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+   4. **Install NannyML** via pip:
+      ```bash
+      pip install nannyml==0.9.0
+      ```
 
-***
+1. **Installing river-torch:**
 
-# Editing this README
+Install as `pip install "river[torch]"`, we are currently using the 0.1.2 version.
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## Contributing to Data-Drift-in-Machine-Learning
 
-## Suggestions for a good README
+We welcome contributions from the community to enhance and expand Data-Drift-in-Machine-Learning. Here's how you can contribute:
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+- **Fork and Pull Requests:**
+  Feel free to fork the Data-Drift-in-Machine-Learning repository and submit your contributions via pull requests. We acknowledge all contributors in our releases, and outstanding contributions may even earn you a spot on the Data-Drift-in-Machine-Learning conference website!
 
-## Name
-Choose a self-explaining name for your project.
+- **Bug Reports and Feature Suggestions:**
+  We value bug reports, feature suggestions, and enhancements. Your feedback helps us improve Data-Drift-in-Machine-Learning and make it more robust and user-friendly.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+- **Sharing Your Projects:**
+  If you've built exciting projects or applications using Data-Drift-in-Machine-Learning, we'd love to hear about them! Share your links and experiences with the community to inspire others.
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Your engagement enriches the Data-Drift-in-Machine-Learning community and contributes to its growth and development!
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+This project is licensed under the GPL-3.0 licence 
