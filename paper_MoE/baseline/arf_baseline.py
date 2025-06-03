@@ -7,7 +7,7 @@ import csv
 import os
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  TARGETED Mixture-of-Experts Pipeline (Your Core Logic + Key Improvements)
+#  TARGETED Mixture-of-Experts Pipeline (Core Logic + Key Improvements)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ───────── OPTIMIZED CONFIG ─────────────────────────────────────────────────
@@ -20,7 +20,7 @@ EPOCHS = 75                # More epochs for better convergence
 LR = 2e-3                 # Slightly lower LR for stability
 SEED_STREAM = 112
 
-# ───────── STREAM & SPLIT (Your Original Logic) ─────────────────────────────
+# ───────── STREAM & SPLIT (Original Logic) ─────────────────────────────
 stream = list(
     synth.LEDDrift(
         seed=SEED_STREAM,
@@ -120,9 +120,9 @@ with open('arf_validation_metrics.csv', 'w', newline='') as f:
 final_val_accuracy = val_metric.get()
 final_val_precision = val_precision.get()
 final_val_recall = val_recall.get()
-print(f"\n✅ Final Accuracy: {final_val_accuracy:.2f}%")
-print(f"✅ Final Precision: {final_val_precision:.2f}%")
-print(f"✅ Final Recall: {final_val_recall:.2f}%")
+print(f"\n Final Accuracy: {final_val_accuracy:.2f}%")
+print(f" Final Precision: {final_val_precision:.2f}%")
+print(f"Final Recall: {final_val_recall:.2f}%")
 
 with open('arf_final_metrics.csv', 'w', newline='') as f:
     writer = csv.writer(f)
