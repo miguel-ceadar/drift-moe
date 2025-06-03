@@ -3,6 +3,8 @@
 *.pth
 *.pt
 *.h5
+*.ipynb_checkpoints
+**/*.ipynb_checkpoints
 *.model
 *.bin
 *.weights
