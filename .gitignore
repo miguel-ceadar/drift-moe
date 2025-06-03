@@ -1,0 +1,54 @@
+# Checkpoint and model files
+*.ckpt
+*.pth
+*.pt
+*.h5
+*.model
+*.bin
+*.weights
+checkpoint*
+model_checkpoints/
+checkpoints/
+
+# Cache files and directories
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.cache/
+*.cache
+pip_cache/
+venv/
+env/
+.venv/
+.env/
+node_modules/
+npm-debug.log
+yarn-error.log
+*.cache/
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Temporary files
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+*.backup
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.log.*
+npm-debug.log*
+yarn-error.log*
+
+# IDE and editor files
+.idea/
+.vscode/
