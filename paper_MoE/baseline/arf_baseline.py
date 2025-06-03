@@ -53,12 +53,9 @@ print(f"Total training samples for ARF: {len(train_data):,}")
 # ───────── INITIALIZE MODEL & METRICS ────────────────────────────────────
 arf = forest.ARFClassifier(n_models=100, seed=42)
 preq_metric = metrics.Accuracy()
-preq_steps, preq_accuracies = [], []
-
-# Lists for additional training metrics
 preq_precision = metrics.Precision()
 preq_recall = metrics.Recall()
-preq_precisions, preq_recalls = [], []
+preq_steps, preq_accuracies, preq_precisions, preq_recalls = [], [], [], []
 
 start_time = time.time()
 
@@ -95,6 +92,8 @@ val_precision = metrics.Precision()
 val_recall = metrics.Recall()
 val_steps, val_accuracies, val_precisions, val_recalls = [], [], [], []
 
+val_start_time = time.time()
+
 for i, (x, y) in enumerate(rtr_val):
     y_pred = arf.predict_one(x)  # Predict on validation set
     val_metric.update(y, y_pred)
@@ -107,12 +106,32 @@ for i, (x, y) in enumerate(rtr_val):
         val_recalls.append(val_recall.get())
         print(f"[{i}] Validation ARF Accuracy: {val_metric.get():.2f}%")
 
+val_time = time.time() - val_start_time
+print(f"Validation time: {val_time:.2f} seconds")
+
 # ───────── SAVE VALIDATION METRICS TO CSV ────────────────────────────────
 with open('arf_validation_metrics.csv', 'w', newline='') as f:
     writer = csv.writer(f)
     writer.writerow(['Step', 'Accuracy', 'Precision', 'Recall'])
     for step, acc, prec, rec in zip(val_steps, val_accuracies, val_precisions, val_recalls):
         writer.writerow([step, f"{acc:.4f}", f"{prec:.4f}", f"{rec:.4f}"])
+
+# ───────── PRINT AND SAVE OVERALL VALIDATION METRICS ─────────────────────
+final_val_accuracy = val_metric.get()
+final_val_precision = val_precision.get()
+final_val_recall = val_recall.get()
+print(f"\n✅ Final Accuracy: {final_val_accuracy:.2f}%")
+print(f"✅ Final Precision: {final_val_precision:.2f}%")
+print(f"✅ Final Recall: {final_val_recall:.2f}%")
+
+with open('arf_final_metrics.csv', 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['Metric', 'Value'])
+    writer.writerow(['Final Accuracy', f"{final_val_accuracy:.4f}"])
+    writer.writerow(['Final Precision', f"{final_val_precision:.4f}"])
+    writer.writerow(['Final Recall', f"{final_val_recall:.4f}"])
+    writer.writerow(['Training Time (seconds)', f"{train_time:.4f}"])
+    writer.writerow(['Validation Time (seconds)', f"{val_time:.4f}"])
 
 # ───────── PLOT AND SAVE TRAINING RESULTS ────────────────────────────────
 plt.figure(figsize=(10, 6))
@@ -134,7 +153,7 @@ plt.plot(val_steps, val_precisions, label="ARF Precision (rtr_val)")
 plt.plot(val_steps, val_recalls, label="ARF Recall (rtr_val)")
 plt.xlabel("Samples")
 plt.ylabel("Metric Value")
-plt.title("ARF Validation Metrics Over Time")
+plt.title("ARF Accuracy on rtr_val Over Time")
 plt.grid(True)
 plt.legend()
 plt.savefig('arf_validation_plot.png')
