@@ -46,7 +46,9 @@ train_data = exp_train + exp_val + rtr_train
 # ────────────────────────────────────────────────────────────────────────────
 #  INITIALISE MODEL & METRICS
 # ────────────────────────────────────────────────────────────────────────────
-ht = tree.HoeffdingTreeClassifier(seed=42)
+ht = tree.HoeffdingTreeClassifier(grace_period=200)
+
+
 
 preq_acc  = metrics.Accuracy()
 preq_prec = metrics.Precision()

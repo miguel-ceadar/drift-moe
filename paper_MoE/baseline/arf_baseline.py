@@ -1,28 +1,23 @@
-from river import metrics
-from river import forest
-from river.datasets import synth
+# arf_stream_experiment.py
+from river import metrics, forest, datasets
 import matplotlib.pyplot as plt
-import time
-import csv
-import os
+import time, csv, os
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  TARGETED Mixture-of-Experts Pipeline (Core Logic + Key Improvements)
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+#  CONFIGURATION
+# ────────────────────────────────────────────────────────────────────────────
+TOTAL_SAMPLES = 1_000_000
+TRAIN_RATIO    = 0.80
+SEED_STREAM    = 112
 
-# ───────── OPTIMIZED CONFIG ─────────────────────────────────────────────────
-TOTAL_SAMPLES = 1000000
-TRAIN_RATIO = 0.80
-NUM_CLASSES = 10
-INPUT_DIM = 24
-BATCH_SIZE = 256           # Keep your original batch size
-EPOCHS = 75                # More epochs for better convergence
-LR = 2e-3                 # Slightly lower LR for stability
-SEED_STREAM = 112
+RESULTS_DIR = "./arf_results"           # <── change this path as needed
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# ───────── STREAM & SPLIT (Original Logic) ─────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+#  DATA STREAM & SPLITS
+# ────────────────────────────────────────────────────────────────────────────
 stream = list(
-    synth.LEDDrift(
+    datasets.synth.LEDDrift(
         seed=SEED_STREAM,
         noise_percentage=0.10,
         irrelevant_features=True,
@@ -30,14 +25,14 @@ stream = list(
     ).take(TOTAL_SAMPLES)
 )
 
-half = TOTAL_SAMPLES // 2
-expert_block = stream[:half]
-router_block = stream[half:]
+half          = TOTAL_SAMPLES // 2
+expert_block  = stream[:half]
+router_block  = stream[half:]
 
-exp_train_sz = int(len(expert_block) * TRAIN_RATIO)
-rtr_train_sz = int(len(router_block) * TRAIN_RATIO)
+exp_train_sz  = int(len(expert_block)  * TRAIN_RATIO)
+rtr_train_sz  = int(len(router_block)  * TRAIN_RATIO)
 
-exp_train, exp_val = expert_block[:exp_train_sz], expert_block[exp_train_sz:]
+exp_train, exp_val = expert_block[:exp_train_sz],  expert_block[exp_train_sz:]
 rtr_train, rtr_val = router_block[:rtr_train_sz], router_block[rtr_train_sz:]
 
 print("── SPLITS ───────────────────────────────────────────")
@@ -45,116 +40,119 @@ print(f" total samples         : {TOTAL_SAMPLES:,}")
 print(f" expert  train / val   : {len(exp_train):,} / {len(exp_val):,}")
 print(f" router  train / val   : {len(rtr_train):,} / {len(rtr_val):,}")
 
-# ───────── PREPARE DATA ─────────────────────────────────────────────────
-# Combine exp_train, exp_val, and rtr_train for training the ARF model
+# Everything except rtr_val is used for training
 train_data = exp_train + exp_val + rtr_train
-print(f"Total training samples for ARF: {len(train_data):,}")
 
-# ───────── INITIALIZE MODEL & METRICS ────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+#  INITIALISE MODEL & METRICS
+# ────────────────────────────────────────────────────────────────────────────
 arf = forest.ARFClassifier(n_models=100, seed=42)
-preq_metric = metrics.Accuracy()
-preq_precision = metrics.Precision()
-preq_recall = metrics.Recall()
-preq_steps, preq_accuracies, preq_precisions, preq_recalls = [], [], [], []
+
+preq_acc  = metrics.Accuracy()
+preq_prec = metrics.Precision()
+preq_rec  = metrics.Recall()
+preq_steps, preq_accs, preq_precs, preq_recs = [], [], [], []
 
 start_time = time.time()
 
-# ───────── TRAIN ARF MODEL (Prequential Evaluation) ───────────────────────
-print("── TRAINING ARF (Prequential) ─────────────────────────")
+# ────────────────────────────────────────────────────────────────────────────
+#  TRAINING  (Prequential)
+# ────────────────────────────────────────────────────────────────────────────
+print("── TRAINING ARF (Prequential) ───────────────────────")
 for i, (x, y) in enumerate(train_data):
-    # Prequential: Predict first, then train
     y_pred = arf.predict_one(x)
-    preq_metric.update(y, y_pred)
-    preq_precision.update(y, y_pred)
-    preq_recall.update(y, y_pred)
-    arf.learn_one(x, y)  # Train ARF
+    preq_acc.update(y, y_pred)
+    preq_prec.update(y, y_pred)
+    preq_rec.update(y, y_pred)
+    arf.learn_one(x, y)
+
     if i % 100 == 0:
         preq_steps.append(i)
-        preq_accuracies.append(preq_metric.get())
-        preq_precisions.append(preq_precision.get())
-        preq_recalls.append(preq_recall.get())
-        print(f"[{i}] Prequential ARF Accuracy: {preq_metric.get():.2f}%")
+        preq_accs.append(preq_acc.get())
+        preq_precs.append(preq_prec.get())
+        preq_recs.append(preq_rec.get())
+        print(f"[{i}] Accuracy: {preq_acc.get():.4f}")
 
 train_time = time.time() - start_time
-print(f"Training time: {train_time:.2f} seconds")
+print(f"Training time: {train_time:.2f}s")
 
-# ───────── SAVE TRAINING METRICS TO CSV ──────────────────────────────────
-with open('arf_training_metrics.csv', 'w', newline='') as f:
-    writer = csv.writer(f)
-    writer.writerow(['Step', 'Accuracy', 'Precision', 'Recall'])
-    for step, acc, prec, rec in zip(preq_steps, preq_accuracies, preq_precisions, preq_recalls):
-        writer.writerow([step, f"{acc:.4f}", f"{prec:.4f}", f"{rec:.4f}"])
+# ────────────────────────────────────────────────────────────────────────────
+#  VALIDATION  (Hold-out on rtr_val)
+# ────────────────────────────────────────────────────────────────────────────
+val_acc  = metrics.Accuracy()
+val_prec = metrics.Precision()
+val_rec  = metrics.Recall()
+val_steps, val_accs, val_precs, val_recs = [], [], [], []
 
-# ───────── VALIDATE ARF MODEL (Holdout on rtr_val) ───────────────────────
-print("── VALIDATING ARF ─────────────────────────────────────")
-val_metric = metrics.Accuracy()
-val_precision = metrics.Precision()
-val_recall = metrics.Recall()
-val_steps, val_accuracies, val_precisions, val_recalls = [], [], [], []
-
-val_start_time = time.time()
-
+val_start = time.time()
 for i, (x, y) in enumerate(rtr_val):
-    y_pred = arf.predict_one(x)  # Predict on validation set
-    val_metric.update(y, y_pred)
-    val_precision.update(y, y_pred)
-    val_recall.update(y, y_pred)
-    if i % 50 == 0:  # More frequent updates for smoother curve
+    y_pred = arf.predict_one(x)
+    val_acc.update(y, y_pred)
+    val_prec.update(y, y_pred)
+    val_rec.update(y, y_pred)
+
+    if i % 50 == 0:
         val_steps.append(i)
-        val_accuracies.append(val_metric.get())
-        val_precisions.append(val_precision.get())
-        val_recalls.append(val_recall.get())
-        print(f"[{i}] Validation ARF Accuracy: {val_metric.get():.2f}%")
+        val_accs.append(val_acc.get())
+        val_precs.append(val_prec.get())
+        val_recs.append(val_rec.get())
+        print(f"[VAL {i}] Accuracy: {val_acc.get():.4f}")
 
-val_time = time.time() - val_start_time
-print(f"Validation time: {val_time:.2f} seconds")
+val_time = time.time() - val_start
+print(f"Validation time: {val_time:.2f}s")
 
-# ───────── SAVE VALIDATION METRICS TO CSV ────────────────────────────────
-with open('arf_validation_metrics.csv', 'w', newline='') as f:
-    writer = csv.writer(f)
-    writer.writerow(['Step', 'Accuracy', 'Precision', 'Recall'])
-    for step, acc, prec, rec in zip(val_steps, val_accuracies, val_precisions, val_recalls):
-        writer.writerow([step, f"{acc:.4f}", f"{prec:.4f}", f"{rec:.4f}"])
+# ────────────────────────────────────────────────────────────────────────────
+#  SAVE CSV METRICS
+# ────────────────────────────────────────────────────────────────────────────
+def to_csv(path, header, rows):
+    with open(path, "w", newline="") as f:
+        csv.writer(f).writerows([header, *rows])
 
-# ───────── PRINT AND SAVE OVERALL VALIDATION METRICS ─────────────────────
-final_val_accuracy = val_metric.get()
-final_val_precision = val_precision.get()
-final_val_recall = val_recall.get()
-print(f"\n Final Accuracy: {final_val_accuracy:.2f}%")
-print(f" Final Precision: {final_val_precision:.2f}%")
-print(f"Final Recall: {final_val_recall:.2f}%")
+to_csv(
+    os.path.join(RESULTS_DIR, "arf_training_metrics.csv"),
+    ["Step", "Accuracy", "Precision", "Recall"],
+    zip(preq_steps, preq_accs, preq_precs, preq_recs)
+)
 
-with open('arf_final_metrics.csv', 'w', newline='') as f:
-    writer = csv.writer(f)
-    writer.writerow(['Metric', 'Value'])
-    writer.writerow(['Final Accuracy', f"{final_val_accuracy:.4f}"])
-    writer.writerow(['Final Precision', f"{final_val_precision:.4f}"])
-    writer.writerow(['Final Recall', f"{final_val_recall:.4f}"])
-    writer.writerow(['Training Time (seconds)', f"{train_time:.4f}"])
-    writer.writerow(['Validation Time (seconds)', f"{val_time:.4f}"])
+to_csv(
+    os.path.join(RESULTS_DIR, "arf_validation_metrics.csv"),
+    ["Step", "Accuracy", "Precision", "Recall"],
+    zip(val_steps, val_accs, val_precs, val_recs)
+)
 
-# ───────── PLOT AND SAVE TRAINING RESULTS ────────────────────────────────
-plt.figure(figsize=(10, 6))
-plt.plot(preq_steps, preq_accuracies, label="ARF Accuracy (Prequential)")
-plt.plot(preq_steps, preq_precisions, label="ARF Precision (Prequential)")
-plt.plot(preq_steps, preq_recalls, label="ARF Recall (Prequential)")
-plt.xlabel("Samples")
-plt.ylabel("Metric Value")
-plt.title("ARF Training Metrics Over Time")
-plt.grid(True)
-plt.legend()
-plt.savefig('arf_training_plot.png')
+to_csv(
+    os.path.join(RESULTS_DIR, "arf_final_metrics.csv"),
+    ["Metric", "Value"],
+    [
+        ("Final Accuracy",    f"{val_acc.get():.4f}"),
+        ("Final Precision",   f"{val_prec.get():.4f}"),
+        ("Final Recall",      f"{val_rec.get():.4f}"),
+        ("Training Time (s)", f"{train_time:.2f}"),
+        ("Validation Time (s)",f"{val_time:.2f}")
+    ]
+)
+
+# ────────────────────────────────────────────────────────────────────────────
+#  PLOTS
+# ────────────────────────────────────────────────────────────────────────────
+plt.figure(figsize=(10,6))
+plt.plot(preq_steps, preq_accs, label="Accuracy")
+plt.plot(preq_steps, preq_precs, label="Precision")
+plt.plot(preq_steps, preq_recs,  label="Recall")
+plt.xlabel("Samples"); plt.ylabel("Metric")
+plt.title("Adaptive Random Forest – Training (Prequential)")
+plt.grid(True); plt.legend()
+plt.savefig(os.path.join(RESULTS_DIR, "arf_training_plot.png"))
 plt.close()
 
-# ───────── PLOT AND SAVE VALIDATION RESULTS ──────────────────────────────
-plt.figure(figsize=(10, 6))
-plt.plot(val_steps, val_accuracies, label="ARF Accuracy (rtr_val)")
-plt.plot(val_steps, val_precisions, label="ARF Precision (rtr_val)")
-plt.plot(val_steps, val_recalls, label="ARF Recall (rtr_val)")
-plt.xlabel("Samples")
-plt.ylabel("Metric Value")
-plt.title("ARF Accuracy on rtr_val Over Time")
-plt.grid(True)
-plt.legend()
-plt.savefig('arf_validation_plot.png')
+plt.figure(figsize=(10,6))
+plt.plot(val_steps, val_accs, label="Accuracy")
+plt.plot(val_steps, val_precs, label="Precision")
+plt.plot(val_steps, val_recs,  label="Recall")
+plt.xlabel("Samples"); plt.ylabel("Metric")
+plt.title("Adaptive Random Forest – Validation on rtr_val")
+plt.grid(True); plt.legend()
+plt.savefig(os.path.join(RESULTS_DIR, "arf_validation_plot.png"))
 plt.close()
+
+print(f"\n✔ All results saved to: {os.path.abspath(RESULTS_DIR)}")
