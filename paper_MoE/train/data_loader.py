@@ -31,6 +31,5 @@ class DataLoader:
         """
         inst = self._stream.next_instance()
         
-        x_vec = inst.x 
-        y_true = inst.y_index
-        return x_vec, y_true
+        return inst
+

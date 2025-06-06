@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import random
+import sys
 
 from river import metrics
 from sklearn.cluster import KMeans
@@ -72,6 +73,7 @@ class MoEModel:
 
         # Data stream via CapyMOA
         self.stream = DataLoader(self.cfg.cli)
+        print(type(self.stream))
         self.stream.restart()
         self.schema = self.stream.get_schema()
 
@@ -81,6 +83,7 @@ class MoEModel:
         self.total_samples = self.cfg.total_samples
         self.print_every = self.cfg.print_every
 
+        
         # Decide number of experts and expert class
         if self.cfg.mode in ["task", "joint_task"]:
             # Task mode: one expert per class, each is a binary-capable CapyMOA HT
@@ -89,7 +92,7 @@ class MoEModel:
 
             # Create one binary Expert per class (num_classes=2)
             self.experts = [
-                Expert(schema=self.schema, grace_period=50, confidence=1e-7)
+                Expert(schema=self.schema, num_classes=2, grace_period=50, confidence=1e-7)
                 for _ in range(self.n_experts)
             ]
         else:
@@ -98,7 +101,7 @@ class MoEModel:
             self.task_mode = False
 
             self.experts = [
-                Expert(schema=self.schema, grace_period=50, confidence=1e-7)
+                Expert(schema=self.schema, num_classes=self.n_experts, grace_period=50, confidence=1e-7)
                 for _ in range(self.n_experts)
             ]
 
@@ -147,6 +150,8 @@ class MoEModel:
 
         for idx in range(1, total + 1):
             inst = self.stream.next_instance()
+            print(inst)
+            sys.stdout.flush()
             x_vec = inst.x  # length=input_dim
             y_true = inst.y_index  # in [0..num_classes-1]
 
@@ -226,11 +231,13 @@ class MoEModel:
         running_loss = 0.0
         micro_X, micro_y = [], []
 
+        inst = self.stream.next_instance()
+        print(inst)
         self.stream.restart()
         self.router.train()
-
         for t in range(1, total + 1):
             inst = self.stream.next_instance()
+            print(inst)
             x_vec = inst.x
             y_true = inst.y_index
 
