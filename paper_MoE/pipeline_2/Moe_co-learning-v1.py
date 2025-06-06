@@ -276,11 +276,11 @@ class OnlineMixtureOfExperts:
 
 def run_online_experiment():
     """Run the complete online learning experiment"""
-    print("🚀 Starting Online Mixture-of-Experts Experiment")
-    print(f"📊 Total samples: {TOTAL_SAMPLES:,}")
-    print(f"🔄 Expert updates every: {EXPERT_UPDATE_FREQ} samples")
-    print(f"🎯 Router updates every: {ROUTER_UPDATE_FREQ} samples")
-    print(f"✅ Validation every: {VALIDATION_FREQ} samples")
+    print("  Starting Online Mixture-of-Experts Experiment")
+    print(f" Total samples: {TOTAL_SAMPLES:,}")
+    print(f" Expert updates every: {EXPERT_UPDATE_FREQ} samples")
+    print(f"  Router updates every: {ROUTER_UPDATE_FREQ} samples")
+    print(f" Validation every: {VALIDATION_FREQ} samples")
     
     # Initialize system
     moe_system = OnlineMixtureOfExperts()
@@ -330,13 +330,13 @@ def run_online_experiment():
     final_validation = moe_system.validate_incremental(val_stream)
     
     print("\n" + "="*60)
-    print("🎯 FINAL RESULTS")
+    print(" FINAL RESULTS")
     print("="*60)
-    print(f"📊 Samples Processed: {final_status['samples_processed']:,}")
-    print(f"🎯 Final Training Accuracy: {final_status['overall_accuracy']:.4f}")
-    print(f"✅ Final Validation Accuracy: {final_validation['accuracy']:.4f}")
-    print(f"🚨 Total Drift Detections: {final_status['drift_detections']}")
-    print(f"⏱️ Total Time: {time.time() - start_time:.1f}s")
+    print(f" Samples Processed: {final_status['samples_processed']:,}")
+    print(f"  Final Training Accuracy: {final_status['overall_accuracy']:.4f}")
+    print(f"  Final Validation Accuracy: {final_validation['accuracy']:.4f}")
+    print(f" Total Drift Detections: {final_status['drift_detections']}")
+    print(f"⏱ Total Time: {time.time() - start_time:.1f}s")
     
     print("\n🔍 Expert Performance:")
     for i, acc in final_status['expert_accuracies'].items():

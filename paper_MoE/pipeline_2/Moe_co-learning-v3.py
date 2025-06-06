@@ -57,7 +57,7 @@ class RouterMLP(nn.Module):
 
 router = RouterMLP()
 opt = torch.optim.Adam(router.parameters(), lr=LR)
-# ⭐️ CHANGE 1: Switched to CrossEntropyLoss for single-label multi-class classification
+# CHANGE 1: Switched to CrossEntropyLoss for single-label multi-class classification
 criterion = nn.CrossEntropyLoss()
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ for i, (x_dict, y_true) in enumerate(stream):
     opt.zero_grad()
     training_logits = router(x_vec)
 
-    # ⭐️ CHANGE 2: The target is now the ground truth label, giving a clear signal.
+    #  CHANGE 2: The target is now the ground truth label, giving a clear signal.
     target_tensor = torch.tensor([y_true], dtype=torch.long)
     loss = criterion(training_logits, target_tensor)
 
@@ -110,5 +110,5 @@ for i, (x_dict, y_true) in enumerate(stream):
 # 3) FINAL RESULTS
 # ────────────────────────────────────────────────────────────────────────────
 print("\n── FINAL RESULTS ───────────────────────────────────")
-print(f"✅ Final Pipeline Accuracy: {pipe_acc.get():.4f}")
+print(f" Final Pipeline Accuracy: {pipe_acc.get():.4f}")
 print("──────────────────────────────────────────────────")
