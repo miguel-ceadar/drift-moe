@@ -207,16 +207,16 @@ class MoEModel:
 
     def train_joint_data(self):
         """
-        Online joint training of router MLP and multiclass data-experts (CapyMOA HT).
+        Online joint training of router MLP and multiclass data‐experts using BCEWithLogitsLoss.
         ON‐THE‐FLY:
-          1) For each incoming instance:
-             a) Router forward → get weights via softmax(logits).
-             b) For each data-expert_i, collect predict_proba(inst) → length=num_classes.
-             c) mix_prob = weights @ exp_probs → log_mix = log(mix_prob / sum).
-             d) Accumulate mini-batch of (log_mix, y_true) for NLL router update every batch_size samples.
-             e) Top-K data-expert_i.train(inst) updates (prequential metric for each).
-             f) Update pipeline metric via argmax(mix_prob).
-             g) Every print_every samples, log router CE and pipeline accuracy.
+        1) For each incoming instance:
+            a) Router forward → get weights via softmax(logits).
+            b) For each data‐expert_i, collect predict_proba(inst) → list of length=num_classes.
+            c) Build a multi‐hot “correct_mask” indicating which experts would predict y_true correctly.
+            d) Accumulate mini‐batch of (logits, correct_mask) for BCE router update every batch_size samples.
+            e) Top‐K data‐expert_i.train(inst) updates (prequential metric for each).
+            f) Update pipeline metric by picking expert = argmax(weights) → predict(inst).
+            g) Every print_every samples, log average BCE loss and pipeline accuracy.
         """
         # Reset metrics
         self.pipe_acc = metrics.Accuracy()
@@ -227,30 +227,30 @@ class MoEModel:
         BATCH = self.cfg.batch_size
         TOP_K = self.cfg.top_k
 
-        nll = nn.NLLLoss(reduction="mean")
+        bce = nn.BCEWithLogitsLoss(reduction="mean")
         running_loss = 0.0
-        micro_X, micro_y = [], []
+        micro_logits, micro_multi = [], []
 
+        # Prepare stream and router
         inst = self.stream.next_instance()
-        print(inst)
         self.stream.restart()
         self.router.train()
+
         for t in range(1, total + 1):
             inst = self.stream.next_instance()
-            print(inst)
             x_vec = inst.x
             y_true = inst.y_index
 
-            x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)  # 1×input_dim
+            x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)  # [1×input_dim]
 
             # Router forward
-            logits = self.router(x_t)            # 1×n_experts
-            weights = torch.softmax(logits, dim=1)  # 1×n_experts
+            logits = self.router(x_t)                  # [1×n_experts]
+            weights = torch.softmax(logits, dim=1)     # [1×n_experts]
 
             # Gather experts’ probability vectors
             exp_probs_list = []
             for eid, expert in enumerate(self.experts):
-                p_list = expert.predict_proba(inst)  # length ≤ num_classes
+                p_list = expert.predict_proba(inst)   # list of length ≤ num_classes or None
                 if p_list is None:
                     padded = [1.0 / self.num_classes] * self.num_classes
                 elif len(p_list) < self.num_classes:
@@ -259,27 +259,35 @@ class MoEModel:
                     padded = list(p_list)
                 exp_probs_list.append(padded)
 
-            exp_probs = torch.tensor(exp_probs_list, dtype=torch.float32, device=self.device)  # n_experts × num_classes
+            exp_probs = torch.tensor(
+                exp_probs_list, dtype=torch.float32, device=self.device
+            )  # [n_experts × num_classes]
 
-            # Mix & log
-            mix_prob = torch.mm(weights, exp_probs) + 1e-9  # 1×num_classes
-            log_mix = (mix_prob / mix_prob.sum()).log()  # 1×num_classes
+            # Build multi‐hot “which experts predict y_true correctly?”
+            correct_mask = torch.zeros(self.n_experts, dtype=torch.float32, device=self.device)
+            for eid in range(self.n_experts):
+                pred_cls = int(torch.argmax(exp_probs[eid]).item())
+                if pred_cls == y_true:
+                    correct_mask[eid] = 1.0
+            if correct_mask.sum() == 0.0:
+                best_e = int(torch.argmax(exp_probs[:, y_true]).item())
+                correct_mask[best_e] = 1.0
 
-            # Accumulate mini-batch for router update
-            micro_X.append(log_mix)
-            micro_y.append(y_true)
-            if len(micro_X) == BATCH:
-                batch_X = torch.cat(micro_X, dim=0)        # B × num_classes
-                batch_y = torch.tensor(micro_y, dtype=torch.long, device=self.device)  # B
-                loss = nll(batch_X, batch_y)
+            # Accumulate minibatch for BCE router update
+            micro_logits.append(logits)                     # [1×n_experts]
+            micro_multi.append(correct_mask.unsqueeze(0))   # [1×n_experts]
+            if len(micro_logits) == BATCH:
+                batch_logits = torch.cat(micro_logits, dim=0)       # [BATCH×n_experts]
+                batch_multi = torch.cat(micro_multi, dim=0)         # [BATCH×n_experts]
+                loss_b = bce(batch_logits, batch_multi)
                 self.opt.zero_grad()
-                loss.backward()
+                loss_b.backward()
                 self.opt.step()
-                running_loss += loss.item() * BATCH
-                micro_X.clear()
-                micro_y.clear()
+                running_loss += loss_b.item() * BATCH
+                micro_logits.clear()
+                micro_multi.clear()
 
-            # Top-K data-expert updates (train & metric)
+            # Top‐K data‐expert updates (train & metric)
             with torch.no_grad():
                 topk_ids = torch.topk(weights, k=TOP_K, dim=1).indices.squeeze(0)
             for eid in topk_ids.tolist():
@@ -287,14 +295,18 @@ class MoEModel:
                 p_hat = self.experts[eid].predict(inst)
                 self.exp_metrics[eid].update(int(p_hat == y_true), p_hat)
 
-            # Running pipeline metric
-            y_hat = int(torch.argmax(mix_prob).item())
+            # Running pipeline metric (choose expert = argmax(weights))
+            chosen_eid = int(torch.argmax(weights).item())
+            y_hat = self.experts[chosen_eid].predict(inst)
             self.pipe_acc.update(y_true, y_hat)
 
             # Logging
             if t % self.print_every == 0:
-                avg_ce = running_loss / max(1, (t // BATCH))
-                print(f"[{t:,} samples]  router CE: {avg_ce:.4f}   pipeline acc: {self.pipe_acc.get():.4f}")
+                num_batches = max(1, (t // BATCH))
+                avg_bce = running_loss / num_batches
+                print(
+                    f"[{t:,} samples]  router BCE: {avg_bce:.4f}   pipeline acc: {self.pipe_acc.get():.4f}"
+                )
                 running_loss = 0.0
 
         # Final summary

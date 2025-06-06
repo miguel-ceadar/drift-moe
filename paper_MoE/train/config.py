@@ -19,10 +19,10 @@ def get_config():
 
     # General model/stream parameters
     parser.add_argument(
-        "--cli",
+        "--dataset",
         type=str,
         required=True,
-        help="Exact CLI string to pass to CapyMOA's MOAStream (e.g. \"-s (...) -d (...) ...\")."
+        help="dataset name, possible choices: [led_a, led_g, sea_a, sea_g, rbf_m, rbf_f, elec, covt, airl]"
     )
     parser.add_argument(
         "--total_samples",
