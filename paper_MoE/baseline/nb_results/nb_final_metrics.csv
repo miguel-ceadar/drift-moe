@@ -1,0 +1,6 @@
+Metric,Value
+Final Accuracy,0.7648
+Final Precision,0.8843
+Final Recall,0.7521
+Training Time (s),229.05
+Validation Time (s),23.96
