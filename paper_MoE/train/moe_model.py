@@ -16,7 +16,7 @@ from sklearn.metrics import silhouette_score
 
 from data_loader import DataLoader
 from experts import Expert
-
+from capymoa.instance import LabeledInstance
 
 class RouterMLP(nn.Module):
     """
@@ -72,7 +72,7 @@ class MoEModel:
         random.seed(self.seed)
 
         # Data stream via CapyMOA
-        self.stream = DataLoader(self.cfg.cli)
+        self.stream = DataLoader(self.cfg.dataset)
         print(type(self.stream))
         self.stream.restart()
         self.schema = self.stream.get_schema()
@@ -149,54 +149,69 @@ class MoEModel:
         self.stream.restart()
 
         for idx in range(1, total + 1):
-            inst = self.stream.next_instance()
-            print(inst)
-            sys.stdout.flush()
-            x_vec = inst.x  # length=input_dim
-            y_true = inst.y_index  # in [0..num_classes-1]
+            if self.stream.has_more_instances():
+                inst = self.stream.next_instance()
+                sys.stdout.flush()
+                x_vec = inst.x  # length=input_dim
+                y_true = inst.y_index  # in [0..num_classes-1]
 
-            # Build multi-hot correct_mask
-            correct_mask = np.zeros(self.n_experts, dtype=np.float32)
-            # For each expert_i, ask expert_i.predict(inst) which returns 0 or 1
-            for cid, expert in enumerate(self.experts):
-                # expert.predict(inst) uses features only
-                p_i = expert.predict(inst)  # 0 or 1
-                is_true_i = int(y_true == cid)
-                if p_i == is_true_i:
-                    correct_mask[cid] = 1.0
-                # update per-expert metric
-                self.exp_metrics[cid].update(int(p_i == is_true_i), p_i)
+                
 
-            # Fallback if no expert was correct
-            if correct_mask.sum() == 0:
-                correct_mask[y_true] = 1.0
+                # Build multi-hot correct_mask exactly as in the original joint loop:
+                correct_mask = np.zeros(self.n_experts, dtype=np.float32)
+                for cid, expert in enumerate(self.experts):
+                    # expert.predict(inst) returns 0/1; we only mark true positives
+                    p_i = expert.predict(inst)
+                    if p_i == 1 and y_true == cid:
+                        correct_mask[cid] = 1.0
+                    # Update per-expert metric: y_true_i = (y_true == cid), y_pred_i = p_i
+                    self.exp_metrics[cid].update(int(y_true == cid), p_i)
+                if correct_mask.sum() == 0.0:
+                    correct_mask[y_true] = 1.0
+                """
+                # Build multi-hot correct_mask
+                correct_mask = np.zeros(self.n_experts, dtype=np.float32)
+                # For each expert_i, ask expert_i.predict(inst) which returns 0 or 1
+                for cid, expert in enumerate(self.experts):
+                    # expert.predict(inst) uses features only
+                    p_i = expert.predict(inst)  # 0 or 1
+                    is_true_i = int(y_true == cid)
+                    if p_i == is_true_i:
+                        correct_mask[cid] = 1.0
+                    # update per-expert metric
+                    self.exp_metrics[cid].update(int(p_i == is_true_i), p_i)
 
-            # Router forward + update
-            x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)  # 1×input_dim
-            target = torch.tensor(correct_mask, dtype=torch.float32, device=self.device).unsqueeze(0)  # 1×n_experts
-            logits = self.router(x_t)  # 1×n_experts
+                # Fallback if no expert was correct
+                if correct_mask.sum() == 0:
+                    correct_mask[y_true] = 1.0
+                """
+                # Router forward + update
+                x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)  # 1×input_dim
+                target = torch.tensor(correct_mask, dtype=torch.float32, device=self.device).unsqueeze(0)  # 1×n_experts
+                logits = self.router(x_t)  # 1×n_experts
 
-            pred_expert = int(torch.argmax(logits).item())
-            self.pipe_acc.update(y_true, pred_expert)
+                pred_expert = int(torch.argmax(logits).item())
+                self.pipe_acc.update(y_true, pred_expert)
 
-            loss = self.bce_loss(logits, target)
-            self.opt.zero_grad()
-            loss.backward()
-            self.opt.step()
+                loss = self.bce_loss(logits, target)
+                self.opt.zero_grad()
+                loss.backward()
+                self.opt.step()
 
-            # Expert updates (binary training)
-            orig_label = inst.y_index
-            for cid, expert in enumerate(self.experts):
-                binary_label = 1 if (orig_label == cid) else 0
-                inst.y_index = binary_label
-                expert.train(inst)
-                # Restore original label for next expert / future usage
-                inst.y_index = orig_label
+                # Expert updates (binary training)
+                orig_label = inst.y_index
+                for cid, expert in enumerate(self.experts):
+                    binary_label = 1 if (orig_label == cid) else 0
+                    #inst.y_index = binary_label
+                    inst_copy = LabeledInstance.from_array(schema=self.schema, x=inst.x, y_index=binary_label)
+                    expert.train(inst_copy)
+                    # Restore original label for next expert / future usage
+                    #inst.y_index = orig_label
 
-            # Logging
-            if idx % self.print_every == 0:
-                avg_exp_acc = np.mean([m.get() for m in self.exp_metrics])
-                print(f"[{idx:>7}/{total}] PipeAcc={self.pipe_acc.get():.4f}  AvgExpertAcc={avg_exp_acc:.4f}")
+                # Logging
+                if idx % self.print_every == 0:
+                    avg_exp_acc = np.mean([m.get() for m in self.exp_metrics])
+                    print(f"[{idx:>7}/{total}] PipeAcc={self.pipe_acc.get():.4f}  AvgExpertAcc={avg_exp_acc:.4f}")
 
         # Final summary
         print("\n── DONE ─────────────────────────────────────────────")
@@ -237,77 +252,77 @@ class MoEModel:
         self.router.train()
 
         for t in range(1, total + 1):
-            inst = self.stream.next_instance()
-            x_vec = inst.x
-            y_true = inst.y_index
+            if self.stream.has_more_instances():
+                inst = self.stream.next_instance()
+                x_vec = inst.x
+                y_true = inst.y_index
 
-            x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)  # [1×input_dim]
+                x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)  # [1×input_dim]
 
-            # Router forward
-            logits = self.router(x_t)                  # [1×n_experts]
-            weights = torch.softmax(logits, dim=1)     # [1×n_experts]
+                # Router forward
+                logits = self.router(x_t)                  # [1×n_experts]
+                weights = torch.softmax(logits, dim=1)     # [1×n_experts]
 
-            # Gather experts’ probability vectors
-            exp_probs_list = []
-            for eid, expert in enumerate(self.experts):
-                p_list = expert.predict_proba(inst)   # list of length ≤ num_classes or None
-                if p_list is None:
-                    padded = [1.0 / self.num_classes] * self.num_classes
-                elif len(p_list) < self.num_classes:
-                    padded = list(p_list) + [0.0] * (self.num_classes - len(p_list))
-                else:
-                    padded = list(p_list)
-                exp_probs_list.append(padded)
+                # Gather experts’ probability vectors
+                exp_probs_list = []
+                for eid, expert in enumerate(self.experts):
+                    p_list = expert.predict_proba(inst)   # list of length ≤ num_classes or None
+                    if p_list is None:
+                        padded = [1.0 / self.num_classes] * self.num_classes
+                    elif len(p_list) < self.num_classes:
+                        padded = list(p_list) + [0.0] * (self.num_classes - len(p_list))
+                    else:
+                        padded = list(p_list)
+                    exp_probs_list.append(padded)
 
-            exp_probs = torch.tensor(
-                exp_probs_list, dtype=torch.float32, device=self.device
-            )  # [n_experts × num_classes]
+                exp_probs = torch.tensor(
+                    exp_probs_list, dtype=torch.float32, device=self.device
+                )     # [n_experts × num_classes]
+                # Build multi‐hot “which experts predict y_true correctly?”
+                correct_mask = torch.zeros(self.n_experts, dtype=torch.float32, device=self.device)
+                for eid in range(self.n_experts):
+                    pred_cls = int(torch.argmax(exp_probs[eid]).item())
+                    if pred_cls == y_true:
+                        correct_mask[eid] = 1.0
+                if correct_mask.sum() == 0.0:
+                    best_e = int(torch.argmax(exp_probs[:, y_true]).item())
+                    correct_mask[best_e] = 1.0
 
-            # Build multi‐hot “which experts predict y_true correctly?”
-            correct_mask = torch.zeros(self.n_experts, dtype=torch.float32, device=self.device)
-            for eid in range(self.n_experts):
-                pred_cls = int(torch.argmax(exp_probs[eid]).item())
-                if pred_cls == y_true:
-                    correct_mask[eid] = 1.0
-            if correct_mask.sum() == 0.0:
-                best_e = int(torch.argmax(exp_probs[:, y_true]).item())
-                correct_mask[best_e] = 1.0
+                # Accumulate minibatch for BCE router update
+                micro_logits.append(logits)                     # [1×n_experts]
+                micro_multi.append(correct_mask.unsqueeze(0))   # [1×n_experts]
+                if len(micro_logits) == BATCH:
+                    batch_logits = torch.cat(micro_logits, dim=0)       # [BATCH×n_experts]
+                    batch_multi = torch.cat(micro_multi, dim=0)         # [BATCH×n_experts]
+                    loss_b = bce(batch_logits, batch_multi)
+                    self.opt.zero_grad()
+                    loss_b.backward()
+                    self.opt.step()
+                    running_loss += loss_b.item() * BATCH
+                    micro_logits.clear()
+                    micro_multi.clear()
 
-            # Accumulate minibatch for BCE router update
-            micro_logits.append(logits)                     # [1×n_experts]
-            micro_multi.append(correct_mask.unsqueeze(0))   # [1×n_experts]
-            if len(micro_logits) == BATCH:
-                batch_logits = torch.cat(micro_logits, dim=0)       # [BATCH×n_experts]
-                batch_multi = torch.cat(micro_multi, dim=0)         # [BATCH×n_experts]
-                loss_b = bce(batch_logits, batch_multi)
-                self.opt.zero_grad()
-                loss_b.backward()
-                self.opt.step()
-                running_loss += loss_b.item() * BATCH
-                micro_logits.clear()
-                micro_multi.clear()
+                # Top‐K data‐expert updates (train & metric)
+                with torch.no_grad():
+                    topk_ids = torch.topk(weights, k=TOP_K, dim=1).indices.squeeze(0)
+                for eid in topk_ids.tolist():
+                    self.experts[eid].train(inst)
+                    p_hat = self.experts[eid].predict(inst)
+                    self.exp_metrics[eid].update(int(p_hat == y_true), p_hat)
 
-            # Top‐K data‐expert updates (train & metric)
-            with torch.no_grad():
-                topk_ids = torch.topk(weights, k=TOP_K, dim=1).indices.squeeze(0)
-            for eid in topk_ids.tolist():
-                self.experts[eid].train(inst)
-                p_hat = self.experts[eid].predict(inst)
-                self.exp_metrics[eid].update(int(p_hat == y_true), p_hat)
+                # Running pipeline metric (choose expert = argmax(weights))
+                chosen_eid = int(torch.argmax(weights).item())
+                y_hat = self.experts[chosen_eid].predict(inst)
+                self.pipe_acc.update(y_true, y_hat)
 
-            # Running pipeline metric (choose expert = argmax(weights))
-            chosen_eid = int(torch.argmax(weights).item())
-            y_hat = self.experts[chosen_eid].predict(inst)
-            self.pipe_acc.update(y_true, y_hat)
-
-            # Logging
-            if t % self.print_every == 0:
-                num_batches = max(1, (t // BATCH))
-                avg_bce = running_loss / num_batches
-                print(
-                    f"[{t:,} samples]  router BCE: {avg_bce:.4f}   pipeline acc: {self.pipe_acc.get():.4f}"
-                )
-                running_loss = 0.0
+                # Logging
+                if t % self.print_every == 0:
+                    num_batches = max(1, (t // BATCH))
+                    avg_bce = running_loss / num_batches
+                    print(
+                        f"[{t:,} samples]  router BCE: {avg_bce:.4f}   pipeline acc: {self.pipe_acc.get():.4f}"
+                    )
+                    running_loss = 0.0
 
         # Final summary
         print("\n── DONE ─────────────────────────────────────────────")
@@ -367,105 +382,140 @@ class MoEModel:
 
         return best_model, scaler, pca, best_k
 
+
     def train_data(self):
         """
-        Two-stage pipeline for 'data' mode:
-         - Stage 1 (first half):
-             a) Burn-in fraction → collect features for clustering.
-             b) _cluster_burn_in(...) → returns best_kmeans/GMM, scaler, pca.
-             c) Assign all burn-in points to clusters.
-             d) Next portion of first half (80/20 split) → train/val data-experts.
-         - Stage 2 (second half):
-             e) Build router offline training set (multi-hot correct mask from data experts).
-             f) Offline train router with BCE.
-             g) Evaluate on router validation.
+        Two‐stage “half/prequential” data mode:
+          • Stage 1 (first 50% of the stream):
+              – Do a small burn‐in for clustering.
+              – For each remaining instance in first half:
+                  * cluster → test that cluster’s expert → update expert metric
+                    → train that expert on this instance (prequential expert training).
+              – At the end, report “Expert prequential accuracy on first half.”
+          • Stage 2 (second 50% of the stream):
+              – Keep experts frozen.
+              – For each instance in second half:
+                  1) Build a multi‐hot mask: which experts (if any) would correctly classify this instance?
+                  2) Use the *current* router to predict an expert: run `eid = argmax(router(x))`, then `y_pred = expert[eid].predict(inst)`.
+                     Update pipeline‐prequential accuracy (test→ no expert update).
+                  3) Train the router on the multi‐hot mask from (1).
+              – At the end, report “Pipeline prequential accuracy on second half.”
         """
+
         total = self.total_samples
         half = total // 2
-        burn_in_end = int(total * self.cfg.burn_in_frac)
-        burn_in_end = min(burn_in_end, half - 1)
 
-        # Stage 1a: Burn-in → collect x vectors
+        # ─────────────────────────────────────────────────────────
+        # Stage 1: First 50%  →  cluster + expert prequential train
+        # ─────────────────────────────────────────────────────────
+        # 1a) Compute how many belong to “burn_in” (we can choose a small fraction, e.g. 10% of the first half)
+        burn_in_end = int(half * self.cfg.burn_in_frac)
+        if burn_in_end < 1:
+            burn_in_end = 1
+        print(f"[INFO] ==== STAGE 1: First {half:,} samples  (burn-in = {burn_in_end:,})")
+
+        # 1b) Collect burn-in samples for clustering
         burn_in_X = []
         self.stream.restart()
         for i in range(1, burn_in_end + 1):
             inst = self.stream.next_instance()
             burn_in_X.append(inst.x)
-        burn_in_X = np.stack(burn_in_X)  # [burn_in_end, input_dim]
+            if i % self.print_every == 0:
+                print(f"[DEBUG] Collected {i:,}/{burn_in_end:,} burn-in samples")
+        burn_in_X = np.stack(burn_in_X)
 
-        # Stage 1b: clustering
+        # 1c) Run clustering on burn-in_X
+        print(f"[INFO] Running clustering on {burn_in_end:,} burn-in samples…")
         best_model, scaler, pca, best_k = self._cluster_burn_in(burn_in_X)
-        print(f"Selected n_experts via clustering = {best_k} (using {self.cfg.cluster_type})")
+        print(f"[INFO] → Selected n_experts = {best_k} (via {self.cfg.cluster_type})")
 
-        # Stage 1c: assign all burn-in points to clusters
-        burn_in_std = scaler.transform(burn_in_X)
-        burn_in_whiten = pca.transform(burn_in_std)
-        if self.cfg.cluster_type == "kmeans":
-            burn_in_labels = best_model.predict(burn_in_whiten)
-        else:
-            burn_in_labels = best_model.predict(burn_in_whiten)
+        # Print how many burn-in points fell into each cluster
+        X_std = scaler.transform(burn_in_X)
+        X_wht = pca.transform(X_std)
+        labels = best_model.predict(X_wht)
+        uniq, counts = np.unique(labels, return_counts=True)
+        print("[DEBUG] Burn-in cluster counts:")
+        for cid, cnt in zip(uniq, counts):
+            print(f"    Cluster {cid:2d}: {cnt:,} samples")
 
-        # Stage 1d: remainder of first half → train & validate data-experts
-        rem_count = half - burn_in_end
-        expert_train_end = burn_in_end + int(rem_count * 0.8)
-        # expert_val_end = half  (unused explicitly)
-        self.stream.restart()
-        for _ in range(burn_in_end):
-            _ = self.stream.next_instance()
+        # 1d) Reinitialize experts & their metrics to size = best_k
+        self.n_experts = best_k
+        self.experts = [
+            Expert(schema=self.schema, num_classes=self.num_classes,
+                   grace_period=50, confidence=1e-7)
+            for _ in range(best_k)
+        ]
+        self.exp_metrics = [metrics.Accuracy() for _ in range(best_k)]
+        print(f"[INFO] Reinitialized {best_k} data‐experts.")
 
-        exp_val_acc = [metrics.Accuracy() for _ in range(best_k)]
+        # Rebuild the router to match the new number of experts:
+        self.router = RouterMLP(
+                input_dim=self.input_dim,
+                hidden_dim=self.cfg.hidden_dim,
+                output_dim=self.n_experts,    # now equals best_k
+                drop_prob=0.2
+            )
+        self.router.to(self.device)
 
-        # EXPERT TRAINING slice
-        for i in range(burn_in_end + 1, expert_train_end + 1):
+        # Re‐create the router optimizer (so it optimizes the new parameters)
+        self.opt = torch.optim.Adam(self.router.parameters(), lr=self.cfg.lr_router)
+        # 1e) Now prequentially train + evaluate experts on the *rest* of the first half
+        first_half_end = half
+        print(f"[INFO] → Running prequential expert train/eval on samples {burn_in_end+1:,}–{half:,}")
+        # Already consumed burn_in_end samples, so the next stream.next_instance() is sample (burn_in_end+1)
+
+        expert_preq_acc = metrics.Accuracy()
+        for idx in range(burn_in_end + 1, first_half_end + 1):
             inst = self.stream.next_instance()
             x_vec = inst.x
             y_true = inst.y_index
 
+            # 1e.i) Find this instance’s cluster_id
             x_std = scaler.transform([x_vec])
-            x_whiten = pca.transform(x_std)
-            cluster_id = int(best_model.predict(x_whiten)[0])
-            self.experts[cluster_id].train(inst)
+            x_wht = pca.transform(x_std)
+            cid = int(best_model.predict(x_wht)[0])
 
-        # EXPERT VALIDATION slice
-        for i in range(expert_train_end + 1, half + 1):
+            # 1e.ii) Test this expert, then update that expert metric
+            y_pred_ex = self.experts[cid].predict(inst)
+            expert_preq_acc.update(y_true, y_pred_ex)
+
+            # 1e.iii) Train expert cid on this instance
+            self.experts[cid].train(inst)
+
+            if (idx - burn_in_end) % self.print_every == 0:
+                done = idx - burn_in_end
+                total_slice = first_half_end - burn_in_end
+                print(f"[DEBUG] Expert preq stage 1: processed {done:,}/{total_slice:,}")
+
+        print(f"\n── Expert prequential accuracy on first 50%: {expert_preq_acc.get():.4f}\n")
+
+        # ─────────────────────────────────────────────────────────
+        # Stage 2: Last 50%  →  train router & evaluate pipeline prequentially
+        # ─────────────────────────────────────────────────────────
+        second_half_start = half + 1
+        second_half_end   = total
+        print(f"[INFO] ==== STAGE 2: Last {total-half:,} samples  (samples {second_half_start:,}–{second_half_end:,})")
+        print("[INFO] Experts are now frozen; we will only train/evaluate the router.")
+
+        # Create a router‐prequential accuracy metric (pipeline accuracy)
+        pipe_preq_acc = metrics.Accuracy()
+
+        # For every instance in the second half:
+        #   2a) Build multi‐hot “which experts are correct” mask,
+        #   2b) Evaluate pipeline (router->expert) → update pipe_preq_acc,
+        #   2c) Train router on that same instance’s mask.
+        #
+        # Note: At index = (half+1), the stream is already at that position, because
+        #       we consumed exactly 'half' calls to next_instance() in Stage 1.
+
+        for idx in range(second_half_start, second_half_end + 1):
             inst = self.stream.next_instance()
             x_vec = inst.x
             y_true = inst.y_index
 
-            x_std = scaler.transform([x_vec])
-            x_whiten = pca.transform(x_std)
-            cluster_id = int(best_model.predict(x_whiten)[0])
-
-            pred_c = self.experts[cluster_id].predict(inst)
-            exp_val_acc[cluster_id].update(y_true, pred_c)
-
-        print("\n── EXPERT VALIDATION ACC (first half) ─────────────")
-        for cid in range(best_k):
-            print(f"  Data Expert {cid}: {exp_val_acc[cid].get():.4f}")
-
-        # Stage 2: Router offline training (second half)
-        rem2_count = total - half
-        rtr_train_end = half + int(rem2_count * 0.8)
-        # rtr_val_end = total
-        self.stream.restart()
-        for _ in range(half):
-            _ = self.stream.next_instance()
-
-        router_X = []
-        router_Y = []
-
-        for i in range(half + 1, rtr_train_end + 1):
-            inst = self.stream.next_instance()
-            x_vec = inst.x
-            y_true = inst.y_index
-
-            x_std = scaler.transform([x_vec])
-            x_whiten = pca.transform(x_std)
-            cluster_id = int(best_model.predict(x_whiten)[0])
-
-            # Build multi-hot mask: expert_i is “correct” if expert_i.predict_proba(inst) ’s argmax == y_true
-            multi = np.zeros(best_k, dtype=np.float32)
-            for cid in range(best_k):
+            # — Step 2a: multi-hot mask from frozen experts —
+            multi = np.zeros(self.n_experts, dtype=np.float32)
+            for cid in range(self.n_experts):
                 p_list = self.experts[cid].predict_proba(inst)
                 if p_list is None:
                     padded = [1.0 / self.num_classes] * self.num_classes
@@ -477,190 +527,109 @@ class MoEModel:
                 if pred_c == y_true:
                     multi[cid] = 1.0
 
-            router_X.append(x_vec)
-            router_Y.append(multi)
-
-        router_X = np.stack(router_X)  # [N_rtr_train, input_dim]
-        router_Y = np.stack(router_Y)  # [N_rtr_train, best_k]
-
-        print(f"\nRouter-train samples: {len(router_Y):,}")
-        print(f"Positive-label density: {router_Y.sum() / (router_Y.size):.4f}")
-
-        # Create Torch Dataset for router (multi-label)
-        from torch.utils.data import Dataset, DataLoader
-
-        class TorchDS_Multi(Dataset):
-            def __init__(self, X, Y):
-                self.X = torch.tensor(X, dtype=torch.float32)
-                self.Y = torch.tensor(Y, dtype=torch.float32)
-            def __len__(self):
-                return len(self.X)
-            def __getitem__(self, idx):
-                return self.X[idx], self.Y[idx]
-
-        train_ds = TorchDS_Multi(router_X, router_Y)
-        train_dl = DataLoader(train_ds, batch_size=self.cfg.batch_size, shuffle=True)
-
-        # Offline train router with BCE
-        router = self.router
-        router.train()
-        bce = nn.BCEWithLogitsLoss()
-        opt = torch.optim.Adam(router.parameters(), lr=self.cfg.lr_router)
-
-        for epoch in range(1, self.cfg.epochs + 1):
-            running = 0.0
-            for xb, yb in train_dl:
-                xb = xb.to(self.device)
-                yb = yb.to(self.device)
-                opt.zero_grad()
-                logits = router(xb)
-                loss = bce(logits, yb)
-                loss.backward()
-                opt.step()
-                running += loss.item() * len(xb)
-            avg_loss = running / len(train_dl.dataset)
-            if epoch % 10 == 0 or epoch == self.cfg.epochs:
-                print(f"Epoch {epoch}/{self.cfg.epochs} | BCE: {avg_loss:.4f}")
-
-        # Evaluate on router validation (second‐half hold‐out)
-        print("\n── EVALUATING ROUTER on validation slice ────────────")
-        router.eval()
-        pipe_acc = metrics.Accuracy()
-
-        for i in range(rtr_train_end + 1, total + 1):
-            inst = self.stream.next_instance()
-            x_vec = inst.x
-            y_true = inst.y_index
-
+            # — Step 2b: pipeline evaluation (router → chosen expert → expert.predict) —
             x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)
             with torch.no_grad():
-                scores = router(x_t).sigmoid().squeeze(0)  # [best_k]
-                eid = int(torch.argmax(scores).item())
-                y_pred = self.experts[eid].predict(inst)
-                pipe_acc.update(y_true, y_pred)
+                scores = self.router(x_t).sigmoid().squeeze(0)  # [n_experts]
+                chosen_e = int(torch.argmax(scores).item())
+            y_pred_pipeline = self.experts[chosen_e].predict(inst)
+            pipe_preq_acc.update(y_true, y_pred_pipeline)
 
-        print(f"\n🏁  Pipeline accuracy on router-val slice: {pipe_acc.get():.4f}")
+            # — Step 2c: train the router on multi-hot mask —
+            self.router.train()
+            xb = x_t  # shape = [1, input_dim]
+            yb = torch.tensor(multi, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, n_experts]
+            bce = nn.BCEWithLogitsLoss()
+            opt = torch.optim.Adam(self.router.parameters(), lr=self.cfg.lr_router)
+            opt.zero_grad()
+            logits = self.router(xb)
+            loss = bce(logits, yb)
+            loss.backward()
+            opt.step()
 
+            if (idx - second_half_start) % self.print_every == 0:
+                done2 = idx - second_half_start
+                tot2  = second_half_end - second_half_start + 1
+                print(f"[DEBUG] Stage 2 preq: processed {done2:,}/{tot2:,} samples. "
+                      f"PipeAcc so far: {pipe_preq_acc.get():.4f}")
+
+        print(f"\n── Pipeline prequential accuracy on second 50%: {pipe_preq_acc.get():.4f}\n")
+
+        print("[INFO] ==== TRAIN_DATA COMPLETE ====")
     def train_task(self):
         """
-        Two-stage pipeline for 'task' mode (binary-capable CapyMOA HTs for each class):
-         - Stage 1 (first half): train each expert_i on binary label (orig_y == i).
-         - Stage 2 (second half):
-             a) Build router offline training set (multi-hot correct mask).
-             b) Offline train router with BCE.
-             c) Evaluate on router validation slice.
+        Task‐mode with prequential evaluation, aligned with 0_Moe.py:
+        • Stage 1 (first 50%): prequential test-then-train each binary expert.
+        • Stage 2 (last 50%): prequential test-then-train router on one-hot ground truth.
         """
+        from capymoa.instance import LabeledInstance
+
         total = self.total_samples
-        half = total // 2
+        half  = total // 2
 
-        # Stage 1: Train task experts on first half
+        # ─── Stage 1: Expert prequential on first half ───
+        print(f"[INFO] Stage 1: Expert prequential on first {half:,} samples")
         self.stream.restart()
-        for i in range(1, half + 1):
-            inst = self.stream.next_instance()
-            x_vec = inst.x
-            y_true = inst.y_index
-            orig_label = y_true
+        expert_accs = [metrics.Accuracy() for _ in range(self.n_experts)]
 
-            # For each expert_i: set inst.y_index=binary, train, restore
+        for t in range(1, half+1):
+            inst   = self.stream.next_instance()
+            y_true = inst.y_index
+
             for cid, expert in enumerate(self.experts):
-                inst.y_index = 1 if (orig_label == cid) else 0
-                expert.train(inst)
-                inst.y_index = orig_label
-                # No metric update yet for offline stage
+                # build a fresh binary‐labeled instance
+                bin_lbl   = 1 if (y_true == cid) else 0
+                inst_copy = LabeledInstance.from_array(self.schema, inst.x, bin_lbl)
 
-        # Stage 2: Build offline router training set
-        rem2_count = total - half
-        rtr_train_end = half + int(rem2_count * 0.8)
-        # rtr_val_end = total
-        self.stream.restart()
-        for _ in range(half):
-            _ = self.stream.next_instance()
+                # test
+                y_pred = expert.predict(inst_copy)
+                expert_accs[cid].update(bin_lbl, y_pred)
 
-        router_X = []
-        router_Y = []
+                # train
+                expert.train(inst_copy)
 
-        for i in range(half + 1, rtr_train_end + 1):
-            inst = self.stream.next_instance()
-            x_vec = inst.x
-            y_true = inst.y_index
-            orig_label = y_true
+            if t % self.print_every == 0:
+                print(f"[DEBUG] Expert Stage 1: {t:,}/{half:,} samples")
 
-            # Build multi-hot: expert_i is correct if expert_i.predict(inst) == (orig_label==i)
-            multi = np.zeros(self.n_experts, dtype=np.float32)
-            for cid, expert in enumerate(self.experts):
-                p_i = expert.predict(inst)  # 0 or 1
-                is_true_i = int(orig_label == cid)
-                if p_i == is_true_i:
-                    multi[cid] = 1.0
+        print("\n── Expert prequential accuracy (first 50%) ──")
+        for cid, m in enumerate(expert_accs):
+            print(f" Expert {cid}: {m.get():.4f}")
 
-            router_X.append(x_vec)
-            router_Y.append(multi)
+        # ─── Stage 2: Router prequential on last half ───
+        print(f"\n[INFO] Stage 2: Router prequential on last {total-half:,} samples")
+        router    = self.router
+        opt       = torch.optim.Adam(router.parameters(), lr=self.cfg.lr_router)
+        bce       = nn.BCEWithLogitsLoss()
+        pipe_acc  = metrics.Accuracy()
 
-        if len(router_Y) == 0:
-            print("No usable samples for router training (all skipped). Exiting.")
-            return
-
-        router_X = np.stack(router_X)  # [N_rtr_train, input_dim]
-        router_Y = np.stack(router_Y)  # [N_rtr_train, n_experts]
-
-        print(f"\nRouter-train samples: {len(router_Y):,}")
-        print(f"Positive-label density: {router_Y.sum() / (router_Y.size):.4f}")
-
-        # Create Torch Dataset for router (multi-label)
-        from torch.utils.data import Dataset, DataLoader
-
-        class TorchDS_Multi(Dataset):
-            def __init__(self, X, Y):
-                self.X = torch.tensor(X, dtype=torch.float32)
-                self.Y = torch.tensor(Y, dtype=torch.float32)
-            def __len__(self):
-                return len(self.X)
-            def __getitem__(self, idx):
-                return self.X[idx], self.Y[idx]
-
-        train_ds = TorchDS_Multi(router_X, router_Y)
-        train_dl = DataLoader(train_ds, batch_size=self.cfg.batch_size, shuffle=True)
-
-        # Offline train router with BCE
-        router = self.router
-        router.train()
-        bce = nn.BCEWithLogitsLoss()
-        opt = torch.optim.Adam(router.parameters(), lr=self.cfg.lr_router)
-
-        for epoch in range(1, self.cfg.epochs + 1):
-            running = 0.0
-            for xb, yb in train_dl:
-                xb = xb.to(self.device)
-                yb = yb.to(self.device)
-                opt.zero_grad()
-                logits = router(xb)
-                loss = bce(logits, yb)
-                loss.backward()
-                opt.step()
-                running += loss.item() * len(xb)
-            avg_loss = running / len(train_dl.dataset)
-            if epoch % 10 == 0 or epoch == self.cfg.epochs:
-                print(f"Epoch {epoch}/{self.cfg.epochs} | BCE: {avg_loss:.4f}")
-
-        # Evaluate on router validation slice (second half)
-        print("\n── EVALUATING ROUTER on validation slice ────────────")
-        router.eval()
-        pipe_acc = metrics.Accuracy()
-
-        for i in range(rtr_train_end + 1, total + 1):
-            inst = self.stream.next_instance()
-            x_vec = inst.x
+        for t in range(half+1, total+1):
+            inst   = self.stream.next_instance()
             y_true = inst.y_index
 
-            x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)
+            # build one-hot ground truth mask for router
+            one_hot = np.zeros(self.n_experts, dtype=np.float32)
+            one_hot[y_true] = 1.0
+
+            # test pipeline
+            x_t    = MoEModel._to_tensor(inst.x).unsqueeze(0).to(self.device)
+            router.eval()
             with torch.no_grad():
-                scores = router(x_t).sigmoid().squeeze(0)  # [n_experts]
-                eid = int(torch.argmax(scores).item())
-                p_i = self.experts[eid].predict(inst)  # 0 or 1
-                is_true = int(y_true == eid)
-                final = eid if (p_i == is_true) else -1
-                pipe_acc.update(y_true, final)
+                scores = router(x_t).sigmoid().squeeze(0)
+                chosen = int(torch.argmax(scores).item())
+            pipe_acc.update(y_true, chosen)
 
-        print(f"\n🏁  Pipeline accuracy on router-val slice: {pipe_acc.get():.4f}")
+            # train router on one-hot mask
+            router.train()
+            yb = torch.tensor(one_hot, dtype=torch.float32, device=self.device).unsqueeze(0)
+            opt.zero_grad()
+            loss = bce(router(x_t), yb)
+            loss.backward()
+            opt.step()
 
+            if (t-half) % self.print_every == 0:
+                done = t - half
+                tot  = total - half
+                print(f"[DEBUG] Router Stage 2: {done:,}/{tot:,} samples  PipeAcc={pipe_acc.get():.4f}")
+
+        print(f"\n🏁 Pipeline prequential accuracy (last 50%): {pipe_acc.get():.4f}")
 

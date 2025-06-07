@@ -60,6 +60,17 @@ class DataLoader:
                 
                     ]
             )
+        if dataset =="sea_a":
+            self._stream = DriftStream(
+                    stream=[SEA(function=1),
+                    GradualDrift(width=50, position=249_975),
+                    SEA(function=2),
+                    GradualDrift(width=50, position=499_975),
+                    SEA(function=4),
+                    GradualDrift(width=50, position=749_975),
+                    SEA(function=1)
+                    ]
+                )
         if dataset == "rbf_m":
             self._stream = RandomRBFGeneratorDrift(number_of_drifting_centroids=50, magnitude_of_change=0.0001)
         
@@ -67,13 +78,13 @@ class DataLoader:
             self._stream = RandomRBFGeneratorDrift(number_of_drifting_centroids=50, magnitude_of_change=0.001)
         
         if dataset == "elec":
-            self._stream = Electricity(directory="~/drift_moe/datasets")
+            self._stream = Electricity(directory="/home/miguel/drift_moe/datasets")
         
         if dataset == "covt":
-            self._stream = Covtype(directory="~/drift_moe/datasets")
+            self._stream = Covtype(directory="/home/miguel/drift_moe/datasets")
         
         if dataset == "airl":
-            self._stream = stream_from_file("~/drift_moe/datasets/airlines.arff", dataset_name="Airlines")
+            self._stream = stream_from_file("/home/miguel/drift_moe/datasets/airlines.arff", dataset_name="Airlines")
 
         
         
@@ -96,4 +107,6 @@ class DataLoader:
         inst = self._stream.next_instance()
         
         return inst
+    def has_more_instances(self):
+        return self._stream.has_more_instances()
 
