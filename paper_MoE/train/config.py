@@ -4,6 +4,8 @@ Config file, gets command line arguments and parse them for usage
 
 import argparse
 
+
+
 def get_config():
     parser = argparse.ArgumentParser(
         description="Master configuration for all MoE experiments (joint, co-learn, two-stage)."
@@ -130,3 +132,27 @@ def get_config():
     )
 
     return parser.parse_args()
+
+
+
+# ─────────────────────────────────────────────────────────
+# EXPERIMENT_SETS: edit here to choose one or many runs.
+# If empty, we just run the single config from CLI.
+# Example single-run:
+# EXPERIMENT_SETS = [
+#   {"mode":"data", "dataset":"elec", "seeds":[42],      "top_k":3},
+# ]
+# Example multi-run:
+# EXPERIMENT_SETS = [
+#   {"mode":"joint_data","dataset":"elec", "seeds":[1,2,3], "top_k":5},
+#   {"mode":"task",      "dataset":"covt","seeds":[42],    "top_k":None},
+# ]
+EXPERIMENT_SETS = []
+
+# TRACKING settings
+TRACKING = {
+    "use_tensorboard": True,
+    "runs_root":       "runs",
+    "global_csv":      "results/global_results.csv",
+    "save_models":     True,
+}
