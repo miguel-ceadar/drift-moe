@@ -3,8 +3,8 @@ Config file, gets command line arguments and parse them for usage
 """
 
 import argparse
-
-
+import random
+import pandas as pd
 
 def get_config():
     parser = argparse.ArgumentParser(
@@ -23,7 +23,6 @@ def get_config():
     parser.add_argument(
         "--dataset",
         type=str,
-        required=True,
         help="dataset name, possible choices: [led_a, led_g, sea_a, sea_g, rbf_m, rbf_f, elec, covt, airl]"
     )
     parser.add_argument(
@@ -83,7 +82,7 @@ def get_config():
     parser.add_argument(
         "--print_every",
         type=int,
-        default=10_000,
+        default=5_000,
         help="Interval (in samples) at which to print streaming progress."
     )
     parser.add_argument(
@@ -147,12 +146,95 @@ def get_config():
 #   {"mode":"joint_data","dataset":"elec", "seeds":[1,2,3], "top_k":5},
 #   {"mode":"task",      "dataset":"covt","seeds":[42],    "top_k":None},
 # ]
-EXPERIMENT_SETS = []
 
-# TRACKING settings
+# ───────────────────────────────────────────────────────────────
+# Dataset‐specific configs
+# ───────────────────────────────────────────────────────────────
+dataset_configs = {
+    "led_g": {"input_dim": 24,  "num_classes": 10},
+    "led_a": {"input_dim": 24,  "num_classes": 10},
+    "sea_a": {"input_dim": 3,  "num_classes": 2},
+    "sea_g": {"input_dim": 3,  "num_classes": 2},
+    "rbf_m": {"input_dim": 10,  "num_classes": 5},
+    "rbf_f": {"input_dim": 10,  "num_classes": 5},
+    "covt":  {"input_dim": 54, "num_classes": 7},
+    "elec":  {"input_dim": 8,  "num_classes": 2},
+    "airl": {"input_dim": 7,  "num_classes": 2},
+}
+
+# ───────────────────────────────────────────────────────────────
+# Modes in the order you want
+# ───────────────────────────────────────────────────────────────
+modes = ["joint_data", "joint_task", "data", "task"]
+
+# ───────────────────────────────────────────────────────────────
+# Now automatically build every (mode,dataset) combo,
+# each with 10 random seeds and top_k=3
+# ───────────────────────────────────────────────────────────────
 TRACKING = {
     "use_tensorboard": True,
-    "runs_root":       "runs",
-    "global_csv":      "results/global_results.csv",
+    "runs_root":       "/home/miguel/drift_moe/runs",
+    "global_csv":      "/home/miguel/drift_moe/results/global_results.csv",
     "save_models":     True,
 }
+"""
+EXPERIMENT_SETS = [
+    {
+        # core fields
+        "mode":    mode,
+        "dataset": dataset,
+        "seeds":   [random.randint(1, 1000000) for _ in range(10)],
+        "top_k":   3,
+        # merge in dataset‐specific fields
+        **dataset_configs[dataset],
+    }
+    for mode in modes
+    for dataset in dataset_configs
+]
+print(len(EXPERIMENT_SETS))
+print(EXPERIMENT_SETS[0])
+"""
+try:
+    done_df = pd.read_csv(TRACKING["global_csv"])
+except FileNotFoundError:
+    # no runs yet
+    done_df = pd.DataFrame(columns=["run_id","pipeline","dataset","seed"])
+
+random.seed(42)   # for reproducibility
+
+EXPERIMENT_SETS = []
+for mode in modes:
+    for ds, ds_cfg in dataset_configs.items():
+        # get seeds already run for this (mode, ds)
+        done_seeds = set(
+            done_df.loc[
+                (done_df["mode"] == mode) &
+                (done_df["dataset"]  == ds),
+                "seed"
+            ].astype(int)
+        )
+        desired = 10
+        remaining = desired - len(done_seeds)
+        if remaining <= 0:
+            print(f"[SKIP] {mode},{ds} already has {len(done_seeds)} seeds")
+            continue
+        # build a pool of candidate seeds
+        candidate_pool = set(range(1, 100_001))
+        available = list(candidate_pool - done_seeds)
+
+        print(f"[DEBUG] Completed seeds for ({mode},{ds}): {sorted(done_seeds)}")
+        # sample up to 10 new seeds
+        new_seeds = random.sample(available, remaining)
+
+
+        EXPERIMENT_SETS.append({
+            "mode":    mode,
+            "dataset": ds,
+            "seeds":   new_seeds,
+            "top_k":   3,
+            **ds_cfg
+        })
+print("=== EXPERIMENT_SETS ===")
+for exp in EXPERIMENT_SETS:
+    print(f"Mode: {exp['mode']:<12}  Dataset: {exp['dataset']:<6}  Seeds: {exp['seeds']}")
+print("=======================")

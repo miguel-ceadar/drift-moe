@@ -17,6 +17,7 @@ from sklearn.metrics import silhouette_score
 from data_loader import DataLoader
 from experts import Expert
 from capymoa.instance import LabeledInstance
+from capymoa.evaluation import ClassificationEvaluator
 
 class RouterMLP(nn.Module):
     """
@@ -42,6 +43,17 @@ class RouterMLP(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+def _safe_metric(metric_obj, method_name, *args, **kwargs):
+    """
+    Calls metric_obj.method_name(*args, **kwargs) but returns 0.0
+    on any exception (e.g. no data seen yet).
+    """
+    try:
+        return getattr(metric_obj, method_name)(*args, **kwargs)
+    except Exception:
+        return 0.
 
 
 class MoEModel:
@@ -76,7 +88,8 @@ class MoEModel:
         print(type(self.stream))
         self.stream.restart()
         self.schema = self.stream.get_schema()
-
+        self.evaluator = ClassificationEvaluator(schema=self.schema)
+        
         # Save parameters
         self.input_dim = self.cfg.input_dim
         self.num_classes = self.cfg.num_classes
@@ -140,11 +153,10 @@ class MoEModel:
              g) Every print_every samples, log pipeline accuracy & average expert accuracy.
         """
         
+        self.evaluator = ClassificationEvaluator(schema=self.schema)
         BATCH = self.cfg.batch_size
         # Reset metrics
-        self.pipe_acc = metrics.Accuracy()
-        self.kappa_m_metric      = metrics.CohenKappa()
-        self.kappa_temp_metric   = metrics.Kappa()
+        
         for i in range(self.n_experts):
             self.exp_metrics[i] = metrics.Accuracy()
 
@@ -158,8 +170,6 @@ class MoEModel:
                 sys.stdout.flush()
                 x_vec = inst.x  # length=input_dim
                 y_true = inst.y_index  # in [0..num_classes-1]
-
-                
 
                 # Build multi-hot correct_mask exactly as in the original joint loop:
                 correct_mask = np.zeros(self.n_experts, dtype=np.float32)
@@ -179,10 +189,8 @@ class MoEModel:
                 logits = self.router(x_t)  # 1×n_experts
 
                 pred_expert = int(torch.argmax(logits).item())
-                self.pipe_acc.update(y_true, pred_expert)
-                self.kappa_m_metric.update(y_true, pred_expert)
-                self.kappa_temp_metric.update(y_true, pred_expert)
 
+                self.evaluator.update(y_true, pred_expert)
                 loss = self.bce_loss(logits, target)
                 self.opt.zero_grad()
                 loss.backward()
@@ -201,9 +209,9 @@ class MoEModel:
 
                 # Logging
                 if t % self.print_every == 0:
-                    curr_acc   = self.pipe_acc.get()
-                    curr_km    = self.kappa_m_metric.get()
-                    curr_kt    = self.kappa_temp_metric.get()
+                    curr_acc   = self.evaluator.accuracy()
+                    curr_km    = self.evaluator.kappa_m()
+                    curr_kt    = self.evaluator.kappa_t()
                     num_batches = max(1, (t // BATCH))
                     avg_bce = running_loss / num_batches
                     print(f"[{t:,} samples] router BCE={avg_bce:.4f}  acc={curr_acc:.4f}  κm={curr_km:.4f}  κt={curr_kt:.4f}")
@@ -216,19 +224,15 @@ class MoEModel:
                             kappa_temp=curr_kt
                         )
                     avg_exp_acc = np.mean([m.get() for m in self.exp_metrics])
-                    print(f"[{t:>7}/{total}] PipeAcc={self.pipe_acc.get():.4f}  AvgExpertAcc={avg_exp_acc:.4f}")
+                    print(f"[{t:>7}/{total}] PipeAcc={self.evaluator.accuracy():.4f}  AvgExpertAcc={avg_exp_acc:.4f}")
                     running_loss = 0.0
 
         # Final summary
         print("\n── DONE ─────────────────────────────────────────────")
-        print(f"Final pipeline accuracy (argmax): {self.pipe_acc.get():.4f}")
-        final_acc = self.pipe_acc.get()
-        final_km  = self.kappa_m_metric.get()
-        final_kt  = self.kappa_temp_metric.get()
+        final_acc = self.evaluator.accuracy()
+        final_km  = self.evaluator.kappa_m()
+        final_kt  = self.evaluator.kappa_t()
         print(f"Final pipeline accuracy: {final_acc:.4f}, κm={final_km:.4f}, κt={final_kt:.4f}")
-        print("\nPer-task-expert accuracies (prequential):")
-        for cid in range(self.n_experts):
-            print(f"  Task Expert {cid}: {self.exp_metrics[cid].get():.4f}")
         return final_acc, final_km, final_kt
 
     def train_joint_data(self, tracker=None):
@@ -245,7 +249,7 @@ class MoEModel:
             g) Every print_every samples, log average BCE loss and pipeline accuracy.
         """
         # Reset metrics
-        self.pipe_acc = metrics.Accuracy()
+        self.evaluator = ClassificationEvaluator(schema=self.schema)
         for i in range(self.n_experts):
             self.exp_metrics[i] = metrics.Accuracy()
 
@@ -323,17 +327,15 @@ class MoEModel:
                 # Running pipeline metric (choose expert = argmax(weights))
                 chosen_eid = int(torch.argmax(weights).item())
                 y_hat = self.experts[chosen_eid].predict(inst)
-                self.pipe_acc.update(y_true, y_hat)
-                self.kappa_m_metric.update(y_true, y_hat)
-                self.kappa_temp_metric.update(y_true, y_hat)
+                self.evaluator.update(y_true, y_hat)
 
                 # Logging
                 if t % self.print_every == 0:
                     num_batches = max(1, (t // BATCH))
                     avg_bce = running_loss / num_batches
-                    curr_acc   = self.pipe_acc.get()
-                    curr_km    = self.kappa_m_metric.get()
-                    curr_kt    = self.kappa_temp_metric.get()
+                    curr_acc   = self.evaluator.accuracy()
+                    curr_km    = self.evaluator.kappa_m()
+                    curr_kt    = self.evaluator.kappa_t()
                     print(f"[{t:,} samples] router BCE={avg_bce:.4f}  acc={curr_acc:.4f}  κm={curr_km:.4f}  κt={curr_kt:.4f}")
                     if tracker:
                         tracker.log_step(
@@ -351,9 +353,9 @@ class MoEModel:
         for eid in range(self.n_experts):
             print(f"  Data Expert {eid}: {self.exp_metrics[eid].get():.4f}")
         
-        final_acc = self.pipe_acc.get()
-        final_km  = self.kappa_m_metric.get()
-        final_kt  = self.kappa_temp_metric.get()
+        final_acc   = self.evaluator.accuracy()
+        final_km    = self.evaluator.kappa_m()
+        final_kt    = self.evaluator.kappa_t()
         print(f"Final pipeline accuracy: {final_acc:.4f}, κm={final_km:.4f}, κt={final_kt:.4f}")
         return final_acc, final_km, final_kt
 
@@ -430,7 +432,9 @@ class MoEModel:
 
         total = self.total_samples
         half = total // 2
-
+        router_eval = ClassificationEvaluator(schema=self.schema)
+        expert_evals = [ClassificationEvaluator(schema=self.schema)
+                for _ in range(self.n_experts)]
         # ─────────────────────────────────────────────────────────
         # Stage 1: First 50%  →  cluster + expert prequential train
         # ─────────────────────────────────────────────────────────
@@ -490,8 +494,7 @@ class MoEModel:
         print(f"[INFO] → Running prequential expert train/eval on samples {burn_in_end+1:,}–{half:,}")
         # Already consumed burn_in_end samples, so the next stream.next_instance() is sample (burn_in_end+1)
 
-        expert_preq_acc = metrics.Accuracy()
-        for idx in range(burn_in_end + 1, first_half_end + 1):
+        for t in range(burn_in_end + 1, first_half_end + 1):
             inst = self.stream.next_instance()
             x_vec = inst.x
             y_true = inst.y_index
@@ -503,17 +506,35 @@ class MoEModel:
 
             # 1e.ii) Test this expert, then update that expert metric
             y_pred_ex = self.experts[cid].predict(inst)
-            expert_preq_acc.update(y_true, y_pred_ex)
+            expert_evals[cid].update(y_true, y_pred_ex)
 
             # 1e.iii) Train expert cid on this instance
             self.experts[cid].train(inst)
 
-            if (idx - burn_in_end) % self.print_every == 0:
-                done = idx - burn_in_end
+            if (t - burn_in_end) % self.print_every == 0:
+                done = t - burn_in_end
                 total_slice = first_half_end - burn_in_end
-                print(f"[DEBUG] Expert preq stage 1: processed {done:,}/{total_slice:,}")
+                accs = [_safe_metric(ev, "accuracy") for ev in expert_evals]
+                avg_acc = sum(accs) / len(accs)
+                kappa_ms = [_safe_metric(ev, "kappa_m") for ev in expert_evals]
+                avg_kappa_m = sum(kappa_ms) / len(kappa_ms)
+                kappa_ts = [_safe_metric(ev, "kappa_t") for ev in expert_evals]
+                avg_kappa_t = sum(kappa_ts) / len(kappa_ts)
+                print(f"[{t:,}] Stage 1 expert preq: processed {done:,}/{total_slice:,}, "
+                      f"AvgExpertAcc={avg_acc:.4f}")
 
-        print(f"\n── Expert prequential accuracy on first 50%: {expert_preq_acc.get():.4f}\n")
+                # log to tracker (no meaningful loss yet)
+                if tracker:
+                    tracker.log_step(
+                        step=t,
+                        loss=0.0,
+                        accuracy=avg_acc,
+                        kappa_m=avg_kappa_m,
+                        kappa_temp=avg_kappa_t
+                    )
+                    print(f"[DEBUG] Expert preq stage 1: processed {done:,}/{total_slice:,}")
+
+        print(f"\n── Expert prequential accuracy on first 50%: {avg_acc:.4f}\n")
 
         # ─────────────────────────────────────────────────────────
         # Stage 2: Last 50%  →  train router & evaluate pipeline prequentially
@@ -524,7 +545,6 @@ class MoEModel:
         print("[INFO] Experts are now frozen; we will only train/evaluate the router.")
 
         # Create a router‐prequential accuracy metric (pipeline accuracy)
-        pipe_preq_acc = metrics.Accuracy()
 
         # For every instance in the second half:
         #   2a) Build multi‐hot “which experts are correct” mask,
@@ -534,7 +554,7 @@ class MoEModel:
         # Note: At index = (half+1), the stream is already at that position, because
         #       we consumed exactly 'half' calls to next_instance() in Stage 1.
 
-        for idx in range(second_half_start, second_half_end + 1):
+        for t in range(second_half_start, second_half_end + 1):
             inst = self.stream.next_instance()
             x_vec = inst.x
             y_true = inst.y_index
@@ -559,7 +579,7 @@ class MoEModel:
                 scores = self.router(x_t).sigmoid().squeeze(0)  # [n_experts]
                 chosen_e = int(torch.argmax(scores).item())
             y_pred_pipeline = self.experts[chosen_e].predict(inst)
-            pipe_preq_acc.update(y_true, y_pred_pipeline)
+            router_eval.update(y_true, y_pred_pipeline)
 
             # — Step 2c: train the router on multi-hot mask —
             self.router.train()
@@ -573,15 +593,26 @@ class MoEModel:
             loss.backward()
             opt.step()
 
-            if (idx - second_half_start) % self.print_every == 0:
-                done2 = idx - second_half_start
+            if (t - second_half_start) % self.print_every == 0:
+                done2 = t - second_half_start
                 tot2  = second_half_end - second_half_start + 1
-                print(f"[DEBUG] Stage 2 preq: processed {done2:,}/{tot2:,} samples. "
-                      f"PipeAcc so far: {pipe_preq_acc.get():.4f}")
+                curr_acc   = router_eval.accuracy()
+                curr_km    = router_eval.kappa_m()
+                curr_kt    = router_eval.kappa_t()
+                print(f"[{t:,} samples] router BCE={loss.item():.4f}  acc={curr_acc:.4f}  κm={curr_km:.4f}  κt={curr_kt:.4f}")
+                if tracker:
+                    tracker.log_step(
+                        step=t,
+                        loss=loss.item(),
+                        accuracy=curr_acc,
+                        kappa_m=curr_km,
+                        kappa_temp=curr_kt
+                    )
 
-        print(f"\n── Pipeline prequential accuracy on second 50%: {pipe_preq_acc.get():.4f}\n")
+        print(f"\n── Pipeline prequential accuracy on second 50%: {router_eval.accuracy():.4f}\n")
 
         print("[INFO] ==== TRAIN_DATA COMPLETE ====")
+        return router_eval.accuracy(), router_eval.kappa_m(), router_eval.kappa_t()
     def train_task(self, tracker=None):
         """
         Task‐mode with prequential evaluation, aligned with 0_Moe.py:
@@ -593,10 +624,13 @@ class MoEModel:
         total = self.total_samples
         half  = total // 2
 
+        router_eval = ClassificationEvaluator(schema=self.schema)
+        expert_evals = [ClassificationEvaluator(schema=self.schema)
+                for _ in range(self.n_experts)]
+
         # ─── Stage 1: Expert prequential on first half ───
         print(f"[INFO] Stage 1: Expert prequential on first {half:,} samples")
         self.stream.restart()
-        expert_accs = [metrics.Accuracy() for _ in range(self.n_experts)]
 
         for t in range(1, half+1):
             inst   = self.stream.next_instance()
@@ -609,24 +643,41 @@ class MoEModel:
 
                 # test
                 y_pred = expert.predict(inst_copy)
-                expert_accs[cid].update(bin_lbl, y_pred)
+                expert_evals[cid].update(bin_lbl, y_pred)
 
                 # train
                 expert.train(inst_copy)
 
             if t % self.print_every == 0:
+
+                accs = [_safe_metric(ev, "accuracy") for ev in expert_evals]
+                avg_acc = sum(accs) / len(accs)
+                kappa_ms = [_safe_metric(ev, "kappa_m") for ev in expert_evals]
+                avg_kappa_m = sum(kappa_ms) / len(kappa_ms)
+                kappa_ts = [_safe_metric(ev, "kappa_t") for ev in expert_evals]
+                avg_kappa_t = sum(kappa_ts) / len(kappa_ts)
+                print(f"[{t:,}] Expert Stage 1: {t:,}/{half:,}  AvgExpertAcc={avg_acc:.4f}")
+
+                # tracker log
+                if tracker:
+                    tracker.log_step(
+                        step=t,
+                        loss=0.0,
+                        accuracy=avg_acc,
+                        kappa_m=avg_kappa_m,
+                        kappa_temp=avg_kappa_t
+                    )
                 print(f"[DEBUG] Expert Stage 1: {t:,}/{half:,} samples")
 
         print("\n── Expert prequential accuracy (first 50%) ──")
-        for cid, m in enumerate(expert_accs):
-            print(f" Expert {cid}: {m.get():.4f}")
+        for cid, m in enumerate(expert_evals):
+            print(f" Expert {cid}: {m.accuracy():.4f}")
 
         # ─── Stage 2: Router prequential on last half ───
         print(f"\n[INFO] Stage 2: Router prequential on last {total-half:,} samples")
         router    = self.router
         opt       = torch.optim.Adam(router.parameters(), lr=self.cfg.lr_router)
         bce       = nn.BCEWithLogitsLoss()
-        pipe_acc  = metrics.Accuracy()
 
         for t in range(half+1, total+1):
             inst   = self.stream.next_instance()
@@ -642,8 +693,7 @@ class MoEModel:
             with torch.no_grad():
                 scores = router(x_t).sigmoid().squeeze(0)
                 chosen = int(torch.argmax(scores).item())
-            pipe_acc.update(y_true, chosen)
-
+            router_eval.update(y_true, chosen)
             # train router on one-hot mask
             router.train()
             yb = torch.tensor(one_hot, dtype=torch.float32, device=self.device).unsqueeze(0)
@@ -655,7 +705,21 @@ class MoEModel:
             if (t-half) % self.print_every == 0:
                 done = t - half
                 tot  = total - half
-                print(f"[DEBUG] Router Stage 2: {done:,}/{tot:,} samples  PipeAcc={pipe_acc.get():.4f}")
+                curr_acc = router_eval.accuracy()
+                curr_km  = router_eval.kappa_m()
+                curr_kt  = router_eval.kappa_t()
+                print(f"[{t:,}] router acc={curr_acc:.4f} κm={curr_km:.4f} κt={curr_kt:.4f} ")
 
-        print(f"\n🏁 Pipeline prequential accuracy (last 50%): {pipe_acc.get():.4f}")
+                if tracker:
+                    tracker.log_step(
+                        step=t,
+                        loss=loss.item(),
+                        accuracy=curr_acc,
+                        kappa_m=curr_km,
+                        kappa_temp=curr_kt
+                    )
+                print(f"[DEBUG] Router Stage 2: {done:,}/{tot:,} samples  PipeAcc={router_eval.accuracy():.4f}")
+
+        print(f"\n🏁 Pipeline prequential accuracy (last 50%): {router_eval.accuracy():.4f}")
+        return router_eval.accuracy(), router_eval.kappa_m(), router_eval.kappa_t()
 

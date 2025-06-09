@@ -1,6 +1,7 @@
 import os, time, csv, psutil
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from capymoa.misc import save_model
 
 class ExperimentTracker:
     def __init__(self, run_id, mode, n_experts, top_k, seed, dataset, config):
@@ -65,8 +66,8 @@ class ExperimentTracker:
             return
         torch.save(router.state_dict(), os.path.join(self.models_dir, "router.pth"))
         for i, ex in enumerate(experts):
-            torch.save(ex.state_dict(), os.path.join(self.models_dir, f"expert_{i}.pth"))
-
+            with open(os.path.join(self.models_dir, f"expert_{i}_pkl"), "wb") as f:
+                save_model(ex, f)
     def log_run_end(self, accuracy, kappa_m, kappa_temp):
         total_time = time.time() - self.start_time
         cpu = psutil.cpu_percent()

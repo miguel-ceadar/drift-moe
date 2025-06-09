@@ -1,9 +1,17 @@
 import multiprocessing as mp
 import time
+import os
+import copy
 
 from config import get_config, EXPERIMENT_SETS, TRACKING
 from moe_model import MoEModel
 from experiment_tracker import ExperimentTracker
+import torch
+
+def _init_worker(n_threads):
+    os.environ["OMP_NUM_THREADS"] = str(n_threads)
+    os.environ["MKL_NUM_THREADS"] = str(n_threads)
+    torch.set_num_threads(n_threads)
 
 def _run_single(config, seed):
     config.seed = seed
@@ -47,30 +55,26 @@ def _run_single(config, seed):
         tracker.close()
 
 def main():
-    cfg = get_config()
+    base_cfg = get_config()
 
-    # If EXPERIMENT_SETS is non-empty, override CLI; else run the single CLI run
-    experiments = EXPERIMENT_SETS or [
-        {
-            "mode":    cfg.mode,
-            "dataset": cfg.dataset,
-            "seeds":   cfg.seeds,
-            "top_k":   cfg.top_k
-        }
-    ]
-
+    experiments = EXPERIMENT_SETS
     for exp in experiments:
-        cfg.mode    = exp["mode"]
-        cfg.dataset = exp["dataset"]
-        cfg.seeds   = exp["seeds"]
-        cfg.top_k   = exp.get("top_k", cfg.top_k)
+        # start from CLI base, then override with exp dict
+        cfg = copy.deepcopy(base_cfg)
+        for key, val in exp.items():
+            setattr(cfg, key, val)
 
-        if len(cfg.seeds) > 1 and cfg.parallel:
-            with mp.Pool(len(cfg.seeds)) as pool:
-                pool.starmap(_run_single, [(cfg, s) for s in cfg.seeds])
+        # ensure seeds is a list
+        seeds = cfg.seeds if isinstance(cfg.seeds, list) else [cfg.seeds]
+
+        # parallel or sequential
+        if len(seeds) > 1 and getattr(cfg, "parallel", False):
+            with mp.Pool(len(seeds)) as pool:
+                pool.starmap(_run_single, [(cfg, s) for s in seeds])
         else:
-            for s in cfg.seeds:
+            for s in seeds:
                 _run_single(cfg, s)
+
 
 if __name__ == "__main__":
     main()
