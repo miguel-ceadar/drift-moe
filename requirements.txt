@@ -1,0 +1,6 @@
+matplotlib==3.8.3
+river==0.21.0
+torch==2.0.0
+numpy==1.23.5
+scikit-learn==1.4.1.post1
+capymoa==0.10.0
