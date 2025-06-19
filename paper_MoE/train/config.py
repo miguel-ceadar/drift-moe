@@ -7,6 +7,9 @@ import random
 import pandas as pd
 
 def get_config():
+    """
+    Gets arguments when running single experiment
+    """
     parser = argparse.ArgumentParser(
         description="Master configuration for all MoE experiments (joint, co-learn, two-stage)."
     )
@@ -18,6 +21,12 @@ def get_config():
         default="joint_data",
         help="Which variant of MoE to run."
     )
+    parser.add_argument(
+            "--cv_folds",
+            type=int,
+            default=1,
+            help="k for k-fold distributed CV-prequential (1 = classic prequential)"
+            )
 
     # General model/stream parameters
     parser.add_argument(
@@ -129,23 +138,13 @@ def get_config():
         default="kmeans",
         help="Clustering algorithm to use during data‐expert burn‐in (data mode)."
     )
+    parser.add_argument(
+            "--label_delay",
+            type=int,
+            default=0,
+            help="label delay")
 
     return parser.parse_args()
-
-
-
-# ─────────────────────────────────────────────────────────
-# EXPERIMENT_SETS: edit here to choose one or many runs.
-# If empty, we just run the single config from CLI.
-# Example single-run:
-# EXPERIMENT_SETS = [
-#   {"mode":"data", "dataset":"elec", "seeds":[42],      "top_k":3},
-# ]
-# Example multi-run:
-# EXPERIMENT_SETS = [
-#   {"mode":"joint_data","dataset":"elec", "seeds":[1,2,3], "top_k":5},
-#   {"mode":"task",      "dataset":"covt","seeds":[42],    "top_k":None},
-# ]
 
 # ───────────────────────────────────────────────────────────────
 # Dataset‐specific configs
@@ -162,38 +161,153 @@ dataset_configs = {
     "airl": {"input_dim": 7,  "num_classes": 2},
 }
 
+
 # ───────────────────────────────────────────────────────────────
-# Modes in the order you want
+# num experts and top k ablation configuration
+# ───────────────────────────────────────────────────────────────
+
+"""
+num_experts_options = [6, 8, 10, 12, 15, 20]
+top_k_options       = [1, 2, 3, 4, 5, 6]
+
+combo_grid = [
+    (n_exp, k)
+    for n_exp in num_experts_options
+    for k      in top_k_options
+    if k <= n_exp // 2
+]
+
+seeds_for_each = [42]
+
+EXPERIMENT_SETS = [
+    {
+        "mode":     "joint_data",
+        "dataset":  "led_g",
+        "n_experts": n_exp,
+        "top_k":    k,
+        "seeds":    seeds_for_each,
+        **dataset_configs["led_g"],   # adds input_dim, num_classes
+    }
+    for n_exp, k in combo_grid
+]
+
+TRACKING = {
+    "use_tensorboard": True,
+    # runs_root stays the same; sub-folders are added per run
+    "runs_root": "/home/miguel/drift_moe/ablation_runs",
+    "global_csv": "/home/miguel/drift_moe/results/ablation_results.csv",
+    "save_models": False,   # stop saving 30× checkpoints if disk is tight
+}
+
+
+"""
+
+
+
+# ────────────────────────────────────────────────
+# joint_data & joint_task on led_g & led_a with label delay
+# ────────────────────────────────────────────────
+"""
+random.seed(51)   # for reproducibility
+
+modes    = ["joint_data", "joint_task"]
+datasets = ["led_g", "led_a"]
+
+EXPERIMENT_SETS = [
+    {
+        "mode":        mode,
+        "dataset":     ds,
+        "seeds":       random.sample(range(1, 1_000_001), 10),
+        "label_delay": 1000,       # ← your new delayed‐labels param
+        **dataset_configs[ds],     # pulls in input_dim & num_classes
+    }
+    for mode in modes
+    for ds   in datasets
+]
+
+TRACKING = {
+    "use_tensorboard": True,
+    "runs_root":       "/home/miguel/drift_moe/delayed_label_runs",
+    "global_csv":      "/home/miguel/drift_moe/results/delayed_label_results.csv",
+    "save_models":     True,
+    }
+"""
+
+
+# ───────────────────────────────────────────────────────────────
+# K-fold cross validation
+# ───────────────────────────────────────────────────────────────
+"""
+CV_FOLDS   = 10
+SEED       = 42          # single seed for every run
+modes      = ["joint_task"]
+datasets   = [
+    "led_a", "led_g",
+    "sea_a", "sea_g",
+    "rbf_m", "rbf_f",
+    "elec",  "covt", "airl",
+]
+
+
+EXPERIMENT_SETS = [
+    {
+        "mode":        mode,
+        "dataset":     ds,
+        "seeds":       [SEED],                 # one-seed list
+        "cv_folds":    CV_FOLDS,               # turn on 10-fold CV
+        **dataset_configs[ds],                 # merges dataset-specific info
+    }
+    for mode in modes
+    for ds   in datasets
+]
+EXPERIMENT_SETS[0:0] = [
+        {
+            "mode":        "joint_data",
+            "dataset":     "airl",
+            "seeds":       [SEED],                 # one-seed list
+            "cv_folds":    CV_FOLDS,               # turn on 10-fold CV
+            **dataset_configs["airl"]
+            },
+        {
+            "mode":        "joint_data",
+            "dataset":     "elec",
+            "seeds":       [SEED],                 # one-seed list
+            "cv_folds":    CV_FOLDS,               # turn on 10-fold CV
+            **dataset_configs["elec"]
+            },
+        {
+            "mode":        "joint_data",
+            "dataset":     "covt",
+            "seeds":       [SEED],                 # one-seed list
+            "cv_folds":    CV_FOLDS,               # turn on 10-fold CV
+            **dataset_configs["covt"]
+            }
+        ]
+TRACKING = {
+    "use_tensorboard": True,
+    "runs_root":       "/home/miguel/drift_moe/k_fold_runs",
+    "global_csv":      "/home/miguel/drift_moe/results/k_fold_results.csv",
+    "save_models":     False,
+    }
+    """
+# ───────────────────────────────────────────────────────────────
+# All different Modes
 # ───────────────────────────────────────────────────────────────
 modes = ["joint_data", "joint_task", "data", "task"]
 
 # ───────────────────────────────────────────────────────────────
-# Now automatically build every (mode,dataset) combo,
-# each with 10 random seeds and top_k=3
+# Full training routine config
+# each with 10 random seeds and, contains functionality of restarting from point where it stopped by checking global csv
 # ───────────────────────────────────────────────────────────────
+"""
 TRACKING = {
     "use_tensorboard": True,
     "runs_root":       "/home/miguel/drift_moe/runs",
     "global_csv":      "/home/miguel/drift_moe/results/global_results.csv",
     "save_models":     True,
-}
-"""
-EXPERIMENT_SETS = [
-    {
-        # core fields
-        "mode":    mode,
-        "dataset": dataset,
-        "seeds":   [random.randint(1, 1000000) for _ in range(10)],
-        "top_k":   3,
-        # merge in dataset‐specific fields
-        **dataset_configs[dataset],
     }
-    for mode in modes
-    for dataset in dataset_configs
-]
-print(len(EXPERIMENT_SETS))
-print(EXPERIMENT_SETS[0])
-"""
+
+Loop for full experiment list
 try:
     done_df = pd.read_csv(TRACKING["global_csv"])
 except FileNotFoundError:
@@ -234,7 +348,24 @@ for mode in modes:
             "top_k":   3,
             **ds_cfg
         })
+"""
+EXPERIMENT_SETS = [
+    {
+        "mode":        "joint_data",
+        "dataset":     "led_g",
+        "seeds":       random.sample(range(1, 1_000_001), 10),
+        **dataset_configs["led_g"],     # pulls in input_dim & num_classes
+    }
+]
+TRACKING = {
+    "use_tensorboard": True,
+    "runs_root":       "/home/miguel/drift_moe/test_runs",
+    "global_csv":      "/home/miguel/drift_moe/results/test_results.csv",
+    "save_models":     False,
+    }
+
 print("=== EXPERIMENT_SETS ===")
 for exp in EXPERIMENT_SETS:
     print(f"Mode: {exp['mode']:<12}  Dataset: {exp['dataset']:<6}  Seeds: {exp['seeds']}")
 print("=======================")
+

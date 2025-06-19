@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import numpy as np
 import random
 import sys
+import copy
+
 
 from river import metrics
 from sklearn.cluster import KMeans
@@ -83,8 +85,9 @@ class MoEModel:
         np.random.seed(self.seed)
         random.seed(self.seed)
 
+        self.cv_folds = self.cfg.cv_folds
         # Data stream via CapyMOA
-        self.stream = DataLoader(self.cfg.dataset)
+        self.stream = DataLoader(self.cfg.dataset, seed=self.seed, label_delay=self.cfg.label_delay)
         print(type(self.stream))
         self.stream.restart()
         self.schema = self.stream.get_schema()
@@ -136,7 +139,8 @@ class MoEModel:
         self.bce_loss = nn.BCEWithLogitsLoss()
         self.ce_loss = nn.CrossEntropyLoss()
 
-        
+
+
 
     def train_joint_task(self, tracker=None):
         """
@@ -263,7 +267,7 @@ class MoEModel:
         # Prepare stream and router
         inst = self.stream.next_instance()
         self.stream.restart()
-        self.router.train()
+        self.router.eval()
 
         for t in range(1, total + 1):
             if self.stream.has_more_instances():
@@ -274,8 +278,9 @@ class MoEModel:
                 x_t = MoEModel._to_tensor(x_vec).unsqueeze(0).to(self.device)  # [1×input_dim]
 
                 # Router forward
+                temp = 0.8
                 logits = self.router(x_t)                  # [1×n_experts]
-                weights = torch.softmax(logits, dim=1)     # [1×n_experts]
+                weights = torch.softmax(logits.detach() / temp, dim=1)     # [1×n_experts]
 
                 # Gather experts’ probability vectors
                 exp_probs_list = []
@@ -301,33 +306,41 @@ class MoEModel:
                 if correct_mask.sum() == 0.0:
                     best_e = int(torch.argmax(exp_probs[:, y_true]).item())
                     correct_mask[best_e] = 1.0
+                
 
+                with torch.no_grad():
+                    # expert-level point predictions
+                    exp_preds = [int(torch.argmax(v).item()) for v in exp_probs]
+                    for eid, p_hat in enumerate(exp_preds):
+                        self.exp_metrics[eid].update(y_true, p_hat)   # y_true first!
+
+                    # pipeline prediction
+                    chosen_eid = int(torch.argmax(weights).item())
+                    y_hat = exp_preds[chosen_eid]
+                    self.evaluator.update(y_true, y_hat)
+                
                 # Accumulate minibatch for BCE router update
-                micro_logits.append(logits)                     # [1×n_experts]
-                micro_multi.append(correct_mask.unsqueeze(0))   # [1×n_experts]
+                micro_logits.append(logits)                     # [1 × n_experts]
+                micro_multi.append(correct_mask.unsqueeze(0))   # [1 × n_experts]
                 if len(micro_logits) == BATCH:
+                    self.router.train()
                     batch_logits = torch.cat(micro_logits, dim=0)       # [BATCH×n_experts]
                     batch_multi = torch.cat(micro_multi, dim=0)         # [BATCH×n_experts]
                     loss_b = self.bce_loss(batch_logits, batch_multi)
                     self.opt.zero_grad()
                     loss_b.backward()
                     self.opt.step()
+                    self.router.eval()
                     running_loss += loss_b.item() * BATCH
                     micro_logits.clear()
                     micro_multi.clear()
 
-                # Top‐K data‐expert updates (train & metric)
+                # Top‐K data‐expert updates (train)
                 with torch.no_grad():
                     topk_ids = torch.topk(weights, k=TOP_K, dim=1).indices.squeeze(0)
                 for eid in topk_ids.tolist():
                     self.experts[eid].train(inst)
-                    p_hat = self.experts[eid].predict(inst)
-                    self.exp_metrics[eid].update(int(p_hat == y_true), p_hat)
 
-                # Running pipeline metric (choose expert = argmax(weights))
-                chosen_eid = int(torch.argmax(weights).item())
-                y_hat = self.experts[chosen_eid].predict(inst)
-                self.evaluator.update(y_true, y_hat)
 
                 # Logging
                 if t % self.print_every == 0:
@@ -722,4 +735,189 @@ class MoEModel:
 
         print(f"\n🏁 Pipeline prequential accuracy (last 50%): {router_eval.accuracy():.4f}")
         return router_eval.accuracy(), router_eval.kappa_m(), router_eval.kappa_t()
+
+    #SECTION FOR K-FOLD VALIDATION
+    def _pipeline_predict(self, inst):
+        """
+        Test-only helper: returns the class predicted by the *chosen* expert.
+        None of the existing train_* paths are touched.
+        """
+        x_t = self._to_tensor(inst.x).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            logits = self.router(x_t)                    # 1×n_experts
+            eid    = int(torch.argmax(logits).item())
+        return self.experts[eid].predict(inst)
+
+        # Helper 0 ───────────────────────────────────────────────────────────────────
+    def _ensure_router_mb_state(self):
+        """Create / reset the mini-batch caches used by the router BCE."""
+        if not hasattr(self, "_mb_logits"):
+            self._mb_logits, self._mb_tgts = [], []
+            self._samples_seen, self._cum_loss = 0, 0.0
+
+
+    # Helper 1 ───────────────────────────────────────────────────────────────────
+    def _train_one_joint_data(self, inst):
+        """
+        One *training-only* step for **joint-data** mode.
+        – No metric updates here (done in driver).
+        – Maintains its own running mean BCE loss so callers can log it if desired.
+        Returns: float  → mean router loss so far.
+        """
+        self._ensure_router_mb_state()
+
+        TOP_K   = self.cfg.top_k
+        BATCH   = self.cfg.batch_size
+        x_vec   = inst.x
+        y_true  = inst.y_index
+        self._samples_seen += 1
+
+        # ── ROUTER forward ────────────────────────────────────────────────────
+        xb      = self._to_tensor(x_vec).unsqueeze(0).to(self.device)
+        logits  = self.router(xb)                       # [1 × nE]
+        weights = torch.softmax(logits, 1)              # [1 × nE]
+
+        # ── Multi-hot target mask (experts that were correct) ────────────────
+        correct_mask = np.zeros(self.n_experts, dtype=np.float32)
+        best_prob, best_eid = -1.0, 0
+        for eid, ex in enumerate(self.experts):
+            y_pred_e = ex.predict(inst)
+            if y_pred_e == y_true:
+                correct_mask[eid] = 1.0
+
+            # fallback prob for “ensure at least one positive”
+            probs   = ex.predict_proba(inst) or [1./self.num_classes]*self.num_classes
+            p_true  = probs[y_true]
+            if p_true > best_prob:
+                best_prob, best_eid = p_true, eid
+
+        if correct_mask.sum() == 0.0:              # guarantee valid BCE target
+            correct_mask[best_eid] = 1.0
+
+        # ── Accumulate router mini-batch ─────────────────────────────────────
+        self._mb_logits.append(logits)
+        tgt = torch.from_numpy(correct_mask).to(self.device).unsqueeze(0)
+        self._mb_tgts.append(tgt)
+
+        if len(self._mb_logits) == BATCH:
+            batch_logits = torch.cat(self._mb_logits, 0)
+            batch_tgts   = torch.cat(self._mb_tgts, 0)
+            loss = self.bce_loss(batch_logits, batch_tgts)
+
+            self.opt.zero_grad(); loss.backward(); self.opt.step()
+            self._cum_loss += loss.item() * BATCH
+
+            self._mb_logits.clear(); self._mb_tgts.clear()
+
+        # ── Train TOP-K experts (after testing) ──────────────────────────────
+        with torch.no_grad():
+            topk_ids = torch.topk(weights, k=TOP_K, dim=1).indices.squeeze(0)
+        for eid in topk_ids.tolist():
+            self.experts[eid].train(inst)
+
+        return self._cum_loss / max(1, self._samples_seen)
+
+
+    # Helper 2 ───────────────────────────────────────────────────────────────────
+    def _train_one_joint_task(self, inst):
+        """
+        One training-only step for **joint-task** mode (binary experts).
+        No metric updates (handled externally).  Returns BCE loss value.
+        """
+        self._ensure_router_mb_state()
+
+        BATCH   = self.cfg.batch_size
+        x_vec   = inst.x
+        y_true  = inst.y_index
+        self._samples_seen += 1
+
+        # ── Router forward ────────────────────────────────────────────────────
+        xb      = self._to_tensor(x_vec).unsqueeze(0).to(self.device)
+        logits  = self.router(xb)                       # [1 × nE]
+
+        # ── Build binary multi-hot mask ──────────────────────────────────────
+        correct_mask = np.zeros(self.n_experts, dtype=np.float32)
+        for cid in range(self.n_experts):
+            if y_true == cid:
+                correct_mask[cid] = 1.0                # class ↔ expert mapping
+
+        # ── Router mini-batch BCE update ─────────────────────────────────────
+        self._mb_logits.append(logits)
+        tgt = torch.from_numpy(correct_mask).to(self.device).unsqueeze(0)
+        self._mb_tgts.append(tgt)
+
+        if len(self._mb_logits) == BATCH:
+            batch_logits = torch.cat(self._mb_logits, 0)
+            batch_tgts   = torch.cat(self._mb_tgts, 0)
+            loss = self.bce_loss(batch_logits, batch_tgts)
+
+            self.opt.zero_grad(); loss.backward(); self.opt.step()
+            self._cum_loss += loss.item() * BATCH
+
+            self._mb_logits.clear(); self._mb_tgts.clear()
+
+        # ── Train *all* binary experts (one-vs-rest) ─────────────────────────
+        from capymoa.instance import LabeledInstance
+        for cid, ex in enumerate(self.experts):
+            bin_lbl  = 1 if (y_true == cid) else 0
+            inst_bin = LabeledInstance.from_array(self.schema, x_vec, bin_lbl)
+            ex.train(inst_bin)
+
+        return self._cum_loss / max(1, self._samples_seen)
+
+
+
+def cv_prequential(cfg, seed, tracker=None):
+    """
+    Distributed k-fold CV-prequential à la Bifet 2015.
+    Reuses the normal trainers’ *per-instance* helpers so that
+    *evaluation output* (Accuracy, κ-M, κ-Temp) is 100 % identical
+    to the single-fold code.
+    """
+    k = cfg.cv_folds
+    assert k > 1, "cv_prequential called with k=1"
+
+    # 1. make k *independent* copies of the whole MoE pipeline
+    folds = [MoEModel(copy.deepcopy(cfg), seed+i) for i in range(k)]
+
+    for mdl in folds:
+        mdl.device = torch.device("cpu")
+        mdl.router.to(mdl.device)
+    # 2. one global pipeline metric (same objects you already use)
+
+    stream = folds[0].stream        # one shared pointer → preserves order
+    stream.restart()
+    evaluator = ClassificationEvaluator(schema=stream.get_schema())
+    rng = np.random.default_rng(seed)
+
+    total = cfg.total_samples
+    for t in range(1, total+1):
+        if stream.has_more_instances():
+            inst = stream.next_instance()
+            y    = inst.y_index
+
+            j = rng.integers(k)                     # fold used ONLY for test
+            y_pred = folds[j]._pipeline_predict(inst)
+            evaluator.update(y, y_pred)
+
+            # train all OTHER folds
+            for m, mdl in enumerate(folds):
+                if m == j: continue
+                if cfg.mode == "joint_data":
+                    mdl._train_one_joint_data(inst)
+                elif cfg.mode == "joint_task":
+                    mdl._train_one_joint_task(inst)
+
+            # ▸ identical progress printing / tensorboard
+            if t % cfg.print_every == 0 and tracker:
+                tracker.log_step(
+                    step      = t,
+                    loss      = 0.0,                      # router loss not aggregated
+                    accuracy  = evaluator.accuracy(),
+                    kappa_m   = evaluator.kappa_m(),
+                    kappa_temp= evaluator.kappa_t()
+                )
+                print(f"[{t:,}] acc={evaluator.accuracy():.4f} κm={evaluator.kappa_m():.4f} κt={evaluator.kappa_t():.4f}")
+
+    return evaluator.accuracy(), evaluator.kappa_m(), evaluator.kappa_t()
 

@@ -4,7 +4,7 @@ import os
 import copy
 
 from config import get_config, EXPERIMENT_SETS, TRACKING
-from moe_model import MoEModel
+from moe_model import MoEModel, cv_prequential
 from experiment_tracker import ExperimentTracker
 import torch
 
@@ -31,8 +31,10 @@ def _run_single(config, seed):
         model = MoEModel(config, seed)
         tracker.n_experts = model.n_experts
 
+        if config.cv_folds > 1:                     
+            acc, km, kt = cv_prequential(config, seed, tracker)
         # dispatch to the right train_* method, passing tracker
-        if config.mode == "joint_data":
+        elif config.mode == "joint_data":
             acc, km, kt = model.train_joint_data(tracker=tracker)
         elif config.mode == "joint_task":
             acc, km, kt = model.train_joint_task(tracker=tracker)
