@@ -21,13 +21,13 @@ This repository contains the code and experiments for the paper:
 ```text
 paper_MoE/
 │
-├── baseline/              # Scripts for baseline models and exploratory ablations
+├── baselines/              # Scripts for baseline models and exploratory ablations
 │
-├── pipeline_1/            # Ablation notebooks for MoEData configuration
+├── MoEData/            # Ablation notebooks for MoEData configuration
 │
-├── pipeline_2/            # Ablation notebooks for MoETask configuration
+├── MoETask/            # Ablation notebooks for MoETask configuration
 │
-├── train/                 # Code used in the paper's experiments
+├── drift-moe/                 # Code used in the paper's experiments
 │   ├── baselines.py           # Test-then-train evaluation of baseline methods
 │   ├── config.py              # Experiment configuration module
 │   ├── data_loader.py         # Stream loading utilities
@@ -37,7 +37,7 @@ paper_MoE/
 │   └── run_experiments.py     # Master script to execute all configured experiments
 ```
 
-> ⚠️ **Note:** The code under `train/` is the exact codebase used to generate the results in the paper. Scripts in `baseline/`, `pipeline_1/`, and `pipeline_2/` were used for ablation and exploratory studies.
+> ⚠️ **Note:** The code under `drift-moe/` is the exact codebase used to generate the results in the paper. Scripts in `baselines/`, `MoEData/`, and `MoETask` were used for ablation and exploratory studies.
 
 ---
 
