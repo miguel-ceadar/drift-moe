@@ -8,6 +8,8 @@ This repository contains the code and experiments for the paper:
 **DriftMoE: A Mixture of Experts Approach to Handle Concept Drifts**
 *(Aspis\*, Cajas Ordóñez\*, Suárez-Cetrulo, Simón Carbajo, 2025)*
 
+Preprint: https://www.arxiv.org/abs/2507.18464 
+
 ---
 
 ## 🧪 Overview
