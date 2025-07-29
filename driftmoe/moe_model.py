@@ -16,8 +16,8 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 
-from data_loader import DataLoader
-from experts import Expert
+from .data_loader import DataLoader
+from .experts import Expert
 from capymoa.instance import LabeledInstance
 from capymoa.evaluation import ClassificationEvaluator
 
