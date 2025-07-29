@@ -66,7 +66,7 @@ class ExperimentTracker:
             return
         torch.save(router.state_dict(), os.path.join(self.models_dir, "router.pth"))
         for i, ex in enumerate(experts):
-            with open(os.path.join(self.models_dir, f"expert_{i}_pkl"), "wb") as f:
+            with open(os.path.join(self.models_dir, f"expert_{i}.pkl"), "wb") as f:
                 save_model(ex, f)
     def log_run_end(self, accuracy, kappa_m, kappa_temp):
         total_time = time.time() - self.start_time
