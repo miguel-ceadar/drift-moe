@@ -10,6 +10,10 @@ This repository contains the code and experiments for the paper:
 
 Preprint: https://www.arxiv.org/abs/2507.18464 
 
+
+Weights for a sample run of training and how to run inference with the model can be found here:
+https://huggingface.co/m-aspis/drift_moe
+
 ---
 
 ## 🧪 Overview
