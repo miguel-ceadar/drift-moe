@@ -1,18 +1,13 @@
 # DriftMoE: A Mixture of Experts Approach to Handle Concept Drifts
 
-[![LICENSE](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/miguel-ceadar/drift-moe/blob/main/LICENSE)
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+[![arXiv](https://img.shields.io/badge/arXiv-2508.00024-b31b1b.svg)](https://arxiv.org/abs/2507.18464)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://github.com/miguel-ceadar/drift-moe)
 
 This repository contains the code and experiments for the paper:
 
 **DriftMoE: A Mixture of Experts Approach to Handle Concept Drifts**
 *(Aspis\*, Cajas Ordóñez\*, Suárez-Cetrulo, Simón Carbajo, 2025)*
-
-Preprint: https://www.arxiv.org/abs/2507.18464 
-
-
-Weights for a sample run of training and how to run inference with the model can be found here:
-https://huggingface.co/m-aspis/drift_moe
 
 ---
 
@@ -105,8 +100,7 @@ Or in APA style:
 
 ## 🔗 License
 
-This project is licensed under the [MIT License](https://github.com/miguel-ceadar/drift-moe/blob/main/LICENSE).
-
+[CC BY-NC-SA 4.0](https://github.com/miguel-ceadar/drift-moe/blob/main/LICENSE)
 ---
 
 ## 📩 Contact
